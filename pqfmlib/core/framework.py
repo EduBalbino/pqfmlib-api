@@ -53,7 +53,7 @@ def validate_framework_configuration(
         return
     if framework == "cudaq" and (not simulation or not ideal or fakebackend):
         raise ValueError(
-            "framework='cudaq' requires simulation=True, ideal=True and "
+            f"framework='{framework}' requires simulation=True, ideal=True and "
             "fakebackend=False; non-ideal simulation, fake backends and QPU "
             "execution are not supported."
         )
