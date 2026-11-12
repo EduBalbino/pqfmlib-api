@@ -4,6 +4,9 @@ Compare against Qiskit or CUDA-Q at absolute tolerance 1e-9. Higher precision
 would reduce floating-point rounding; no gates or observables are approximated.
 """
 
+import time
+from functools import lru_cache
+
 import numpy as np
 import torch
 import tilelang
@@ -72,6 +75,55 @@ def apply_cone_gate(size: int, batch: int, cones: int, gates: int, parity: bool)
     return kernel
 
 
+@tilelang.jit(target="cuda", execution_backend="tvm_ffi")
+def cone_observable_partials(size: int, batch: int, cones: int, observables: int):
+    blocks = (size // 2 + 127) // 128
+
+    @T.prim_func
+    def kernel(state: T.Tensor((cones * batch, size, 2), "float64"),
+               cone_ids: T.Tensor((observables,), "int32"),
+               targets: T.Tensor((observables,), "int32"),
+               output: T.Tensor((observables, batch, blocks, 3), "float64")):
+        with T.Kernel(blocks, observables * batch, threads=128) as (block, item):
+            z = T.alloc_fragment((1, 128), "float64")
+            x = T.alloc_fragment((1, 128), "float64")
+            y = T.alloc_fragment((1, 128), "float64")
+            rz = T.alloc_fragment((1,), "float64")
+            rx = T.alloc_fragment((1,), "float64")
+            ry = T.alloc_fragment((1,), "float64")
+            for lane in T.Parallel(128):
+                idx = block * 128 + lane
+                obs, sample = item // batch, item % batch
+                target = targets[obs]
+                zero = (idx & ((1 << target) - 1)) | ((idx >> target) << (target + 1))
+                one = zero | (1 << target)
+                ar, ai = state[cone_ids[obs] * batch + sample, zero, 0], state[cone_ids[obs] * batch + sample, zero, 1]
+                br, bi = state[cone_ids[obs] * batch + sample, one, 0], state[cone_ids[obs] * batch + sample, one, 1]
+                z[0, lane] = ar * ar + ai * ai - br * br - bi * bi
+                x[0, lane] = 2 * (ar * br + ai * bi)
+                y[0, lane] = 2 * (ar * bi - ai * br)
+            T.reduce_sum(z, rz, dim=1)
+            T.reduce_sum(x, rx, dim=1)
+            T.reduce_sum(y, ry, dim=1)
+            output[item // batch, item % batch, block, 0] = rz[0]
+            output[item // batch, item % batch, block, 1] = rx[0]
+            output[item // batch, item % batch, block, 2] = ry[0]
+    return kernel
+
+
+def cone_expectations(state, batch, cones, observable_cones, observable_targets):
+    size = state.shape[1]
+    count = len(observable_targets)
+    # The smallest possible cone has width two; pad the last reduction block.
+    if size < 256:
+        return None
+    cone_ids = torch.tensor(observable_cones, dtype=torch.int32, device=state.device)
+    targets = torch.tensor(observable_targets, dtype=torch.int32, device=state.device)
+    partials = torch.empty((count, batch, (size // 2 + 127) // 128, 3), dtype=state.dtype, device=state.device)
+    cone_observable_partials(size, batch, cones, count)(state, cone_ids, targets, partials)
+    return partials.sum(dim=2).permute(1, 0, 2).reshape(batch, -1)
+
+
 def local_expectations(state, qubits, target=None):
     values = []
     for qubit in range(qubits) if target is None else (target,):
@@ -122,7 +174,7 @@ def affine_rotation_plan(circuit, parameters):
     return plan
 
 
-def circuit_gates(circuit, parameters, values, plan, instructions):
+def circuit_gates(circuit, parameters, values, plan, instructions, *, strip_identities=True):
     """Build per-row gate matrices, combining consecutive Heisenberg rotations."""
     bound = None if plan is not None else [circuit.assign_parameters(dict(zip(parameters, row))) for row in values]
     batch = len(values)
@@ -175,6 +227,9 @@ def circuit_gates(circuit, parameters, values, plan, instructions):
                     break
                 i += 1
                 matrix = np.stack([np.asarray(c.data[i - 1].operation.to_matrix()) for c in bound]) @ matrix
+        if (strip_identities and len(sites) == 2
+                and np.array_equal(matrix, np.broadcast_to(np.eye(4, dtype=matrix.dtype), matrix.shape))):
+            continue
         parity = len(sites) == 2 and not matrix[:, [0, 0, 1, 1, 2, 2, 3, 3], [1, 2, 0, 3, 0, 3, 1, 2]].any()
         gates.append((sites, parity, matrix))
 
@@ -231,8 +286,8 @@ def causal_cones(gates, num_qubits):
     return cones, observable_cones, observable_targets, width
 
 
-def simulate_full_state(gates, batch, size, num_qubits):
-    """Use a full statevector when reduced cones would cost more."""
+def simulate_full_state(gates, batch, size, num_qubits, pair_edges=()):
+    """Evaluate local and optional diagonal pair expectations from a full statevector."""
     matrices = {
         gate_width: torch.view_as_real(torch.tensor(
             np.stack([matrix for sites, _, matrix in gates if len(sites) == gate_width]),
@@ -250,12 +305,51 @@ def simulate_full_state(gates, batch, size, num_qubits):
         apply_gate(size, gate_width, batch, parity)(
             state, matrix, output, sites[0], sites[1] if gate_width == 2 else 0)
         state = output
-    return local_expectations(state, num_qubits).cpu().numpy()
+    local = local_expectations(state, num_qubits)
+    if not pair_edges:
+        return local.cpu().numpy()
+    basis = torch.arange(size, dtype=torch.int64, device=state.device)
+    probabilities = state[..., 0] ** 2 + state[..., 1] ** 2
+    correlations = []
+    for left, right in pair_edges:
+        sign = (1 - 2 * ((basis >> left) & 1)) * (1 - 2 * ((basis >> right) & 1))
+        flipped = state[:, basis ^ (1 << left) ^ (1 << right), :]
+        overlap = state[..., 0] * flipped[..., 0] + state[..., 1] * flipped[..., 1]
+        correlations.extend(((probabilities * sign).sum(dim=1), overlap.sum(dim=1),
+                             -(overlap * sign).sum(dim=1)))
+    return torch.cat((local, torch.stack(correlations, dim=1)), dim=1).cpu().numpy()
 
 
-def simulate_batch(circuit, parameters, values, plan=None, instructions=None):
-    """Simulate one batch and return local Z, X, Y expectations in site order."""
+@lru_cache(maxsize=16)
+def product_cone_initial_states(shape, contents):
+    local_states = np.frombuffer(contents, dtype=np.complex128).reshape(shape)
+    width = shape[1]
+    basis_bits = (np.arange(1 << width)[:, None] >> np.arange(width)) & 1
+    basis_amplitudes = np.take_along_axis(local_states[:, None, :, :], basis_bits[None, :, :, None], axis=3)
+    result = basis_amplitudes[..., 0].prod(axis=2)
+    result.setflags(write=False)
+    return result
+
+
+def simulate_batch(circuit, parameters, values, plan=None, instructions=None, pair_edges=()):
+    """Simulate local Z/X/Y and optional pair ZZ/XX/YY expectations."""
     batch, size = len(values), 1 << circuit.num_qubits
+    if pair_edges:
+        from pqfmlib.experimental.heisenberg_pair_cones import pair_cones, simulate_pair_cones
+
+        if batch > 64:
+            # Small cones can use a larger batch without excessive state memory.
+            _, probe_gates = circuit_gates(circuit, parameters, values[:1], plan, instructions)
+            probe = pair_cones(probe_gates, circuit.num_qubits, pair_edges)
+            limit = 160 if len(probe[0]) * (1 << probe[3]) <= 65536 else 64
+            if batch > limit:
+                return np.concatenate([simulate_batch(circuit, parameters, values[i:i + limit], plan, instructions, pair_edges)
+                                       for i in range(0, batch, limit)])
+        _, cone_gates = circuit_gates(circuit, parameters, values, plan, instructions)
+        cone_plan = pair_cones(cone_gates, circuit.num_qubits, pair_edges)
+        if len(cone_plan[0]) * (1 << cone_plan[3]) < size:
+            return simulate_pair_cones(cone_gates, circuit.num_qubits, batch, pair_edges, cone_plan)
+        raise RuntimeError("TileLang pair cones are not cheaper than a full state; refusing full-state fallback")
     instructions, gates = circuit_gates(circuit, parameters, values, plan, instructions)
     cones, observable_cones, observable_targets, width = causal_cones(gates, circuit.num_qubits)
     if not gates:
@@ -282,9 +376,7 @@ def simulate_batch(circuit, parameters, values, plan=None, instructions=None):
         for k, (positions, _, _) in enumerate(cones):
             for site, position in positions.items():
                 local_states[k, position] = initial_by_site[site]
-        basis_bits = (np.arange(1 << width)[:, None] >> np.arange(width)) & 1
-        basis_amplitudes = np.take_along_axis(local_states[:, None, :, :], basis_bits[None, :, :, None], axis=3)
-        initial_states = basis_amplitudes[..., 0].prod(axis=2)
+        initial_states = product_cone_initial_states(local_states.shape, local_states.tobytes())
         cones = [(positions, [index for index in selected if index >= circuit.num_qubits], target)
                  for positions, selected, target in cones]
     else:
@@ -324,6 +416,9 @@ def simulate_batch(circuit, parameters, values, plan=None, instructions=None):
         output = torch.empty_like(state)
         apply_cone_gate(size, batch, len(cones), len(unique_matrices), parity)(state, matrices, sites[step], output)
         state = output
+    features = cone_expectations(state, batch, len(cones), observable_cones, observable_targets)
+    if features is not None:
+        return features.cpu().numpy()
     # Pair amplitudes whose target bit is zero or one for local Z/X/Y.
     targets = torch.tensor(observable_targets, device="cuda")[:, None]
     half_indices = torch.arange(size // 2, device="cuda")[None, :]
@@ -355,21 +450,38 @@ class TileLangExecutor:
         self.prepared = None
         self.angle_plan = None
         self.instructions = None
+        self.pair_edges = ()
+        self.progress = None
 
     def execute(self, prepared, theta):
         if self.prepared is not prepared:
             from pqfmlib.maps.heisenberg import heisenberg_chain_observables
 
-            expected, metadata = heisenberg_chain_observables(prepared.qc_t.num_qubits)
+            pairs = [entry for entry in prepared.obs_metadata if len(entry) == 3]
+            pair_edges = tuple(sorted({(entry[1], entry[2]) for entry in pairs}))
+            expected, metadata = heisenberg_chain_observables(
+                prepared.qc_t.num_qubits, measure_2local_diagonal=bool(pair_edges),
+                edges_act=list(pair_edges) if pair_edges else None)
             actual = prepared.obs_isa_broadcast
             if (prepared.obs_metadata != metadata or len(actual) != len(expected)
                     or any(len(group) != 1 or not group[0].equiv(obs)
                            for group, obs in zip(actual, expected))):
-                raise ValueError("TileLang requires local Z/X/Y observables in site order")
+                raise ValueError("TileLang requires local Z/X/Y and optional pair ZZ/XX/YY observables in site order")
+            self.pair_edges = pair_edges
             self.prepared = prepared
             self.angle_plan = affine_rotation_plan(prepared.qc_t, prepared.param_order)
             self.instructions = tuple(prepared.qc_t.data)
-        values = [simulate_batch(prepared.qc_t, prepared.param_order, theta[i:i + 320],
-                                 self.angle_plan, self.instructions)
-                  for i in range(0, len(theta), 320)]
+            if self.angle_plan is None:
+                self.prepared = None
+                raise ValueError("TileLang requires an affine Heisenberg rotation plan; refusing slow per-row parameter binding")
+        progress = self.progress
+        chunk = 320
+        values = []
+        started = time.perf_counter()
+        for i in range(0, len(theta), chunk):
+            values.append(simulate_batch(prepared.qc_t, prepared.param_order, theta[i:i + chunk],
+                                         self.angle_plan, self.instructions, self.pair_edges))
+            if progress and ((i // chunk + 1) % 10 == 0 or i + chunk >= len(theta)):
+                progress({"stage": "tilelang_transform", "rows_done": min(i + chunk, len(theta)),
+                          "rows_total": len(theta), "seconds": time.perf_counter() - started})
         return np.concatenate(values), prepared.obs_metadata

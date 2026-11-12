@@ -1,4 +1,4 @@
-# Python
+# Python and build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,7 +11,7 @@ dist/
 .coverage
 htmlcov/
 
-# Environments and local configuration
+# Environments, credentials, and local Jupyter state
 .venv/
 .venv_gpu/
 .venv_tilelang/
@@ -39,6 +39,8 @@ tests/*
 results/
 backup/
 output/
+.jupyter/
+.jupyter_ystore.db
 
 # OS and editor files
 .DS_Store
@@ -47,18 +49,23 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local datasets and notebooks
+# Local datasets, generated results, and temporary research files
 data/
-*.ipynb
-!experiments/sia/QIMED_MoE_Demanda_Pressao_pqfmlib_api.ipynb
-experiments/*
-!examples/*.ipynb
-dataset_exploration.ipynb
-tutorial/
-
-# Experiment outputs and generated quantum artifacts
+outputs/
 results/
+output/
+backup/
+.audit/
 old_general_results/
+tutorial/
+notebooks_MoE/
+dataset_exploration.ipynb
+run_qfeature_gridsearch_predefinedsplit.py
+run_XYZcross_PCA_classical_quantum_v4.py
+run_XYZcross_SHAP_topN_classical_quantum_v4.py
+run_heisenberg_37q_mps.py
+
+# Generated quantum artifacts
 quantum_features*/
 heisenberg__*/
 job_meta.json
@@ -70,10 +77,34 @@ resource_estimation.csv
 *_circuit_logical.*
 *_circuit_transpiled.*
 
-# Local research/benchmark scripts kept outside the package release
-backup/
-run_qfeature_gridsearch_predefinedsplit.py
-run_XYZcross_PCA_classical_quantum_v4.py
-run_XYZcross_SHAP_topN_classical_quantum_v4.py
-run_heisenberg_37q_mps.py
-notebooks_MoE/
+# Track only the maintained experiment notebooks and supporting documents
+*.ipynb
+!examples/*.ipynb
+experiments/*
+!experiments/sia/
+experiments/sia/*
+!experiments/sia/QIMED_MoE_Demanda_Pressao_pqfmlib_api.ipynb
+!experiments/sia/run_pdf_heisenberg_10fold.py
+!experiments/sia/heisenberg_expert.pdf
+!experiments/sih-sus/
+experiments/sih-sus/*
+!experiments/sih-sus/README.md
+!experiments/sih-sus/tarefa-mortalidade-permanencia.ipynb
+!experiments/sih-sus/sih_sus_reference_moe_sweep.ipynb
+
+# Explicitly maintained tests
+tests/*
+!tests/test_heisenberg_topology.py
+!tests/test_heisenberg_fixed_circuits.py
+!tests/test_superexchange.py
+!tests/test_heisenberg_all_pairs.py
+!tests/test_superexchange_backends.py
+!tests/test_framework_selection.py
+!tests/test_precision.py
+!tests/test_cudaq_execution.py
+!tests/test_statevector_execution.py
+!tests/test_xyz_shap_notebook.py
+!tests/experiments/
+tests/experiments/*
+!tests/experiments/test_tilelang_cone_reduction.py
+!tests/experiments/test_sia_classical_grid.py
