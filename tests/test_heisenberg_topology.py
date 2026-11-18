@@ -19,6 +19,19 @@ from pqfmlib.maps.heisenberg import (
 
 
 class HeisenbergTopologyTests(unittest.TestCase):
+    def test_balanced_encoding_covers_chain_without_losing_components(self):
+        inputs = np.arange(1., 33.)[None, :]
+        balanced, _ = make_heisenberg_theta_matrix(
+            inputs, 19, encoding_mode='multi_axis', balanced_encoding=True,
+            use_tanh_scaling=False,
+        )
+        sequential, _ = make_heisenberg_theta_matrix(
+            inputs, 19, encoding_mode='multi_axis', use_tanh_scaling=False,
+        )
+        self.assertTrue(np.all(np.any(balanced.reshape(18, 3) != 0, axis=1)))
+        self.assertFalse(np.all(np.any(sequential.reshape(18, 3) != 0, axis=1)))
+        np.testing.assert_array_equal(np.sort(balanced[balanced != 0]), inputs[0])
+
     def test_default_chain_matches_original_schedule_and_state(self):
         circuit, params, _ = build_heisenberg_chain_feature_circuit(5, num_blocks=2)
         values = np.arange(8) / 7

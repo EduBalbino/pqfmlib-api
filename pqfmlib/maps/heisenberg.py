@@ -177,13 +177,15 @@ def make_heisenberg_theta_matrix(
     edges_act: list[tuple[int, int]] | None = None,
     interaction_axes: tuple[str, ...] = ("x", "y", "z"),
     encoding_mode: str = "shared_feature",
+    balanced_encoding: bool = False,
 ):
     """Build the parameter matrix used by the notebook Heisenberg map.
 
     Explicit ``edges_act`` select a graph; otherwise the legacy chain is used.
     Shared encoding uses one feature per edge. Multi-axis encoding uses one
     feature per selected axis per edge, in ``interaction_axes`` order. Input
-    columns fill these slots sequentially; the last block is padded with zeros.
+    Columns fill these slots sequentially by default; balanced encoding fills
+    one axis per edge before adding another. The last block is zero-padded.
     The notebook uses ``features_per_block = num_qubits - 1`` because each block
     encodes one feature per nearest-neighbor chain edge. If the dataset has more
     features than one block can cover, additional blocks are appended.
@@ -211,7 +213,17 @@ def make_heisenberg_theta_matrix(
     total_slots = num_blocks * features_per_block
 
     theta_values = np.zeros((n_samples, total_slots), dtype=np.float64)
-    theta_values[:, :num_features] = theta_raw
+    if balanced_encoding and encoding_mode == "multi_axis":
+        # Fill one axis on each edge before adding another axis to any edge.
+        if features_per_block % len(axes):
+            raise ValueError("Balanced encoding requires complete edge slots.")
+        slots = np.arange(features_per_block).reshape(-1, len(axes)).T.ravel()
+        for block in range(num_blocks):
+            start = block * features_per_block
+            count = min(features_per_block, num_features - start)
+            theta_values[:, start + slots[:count]] = theta_raw[:, start:start + count]
+    else:
+        theta_values[:, :num_features] = theta_raw
 
     return theta_values, {
         "num_features": int(num_features),
@@ -350,6 +362,8 @@ class HeisenbergProjectiveQFM(BaseProjectiveQFM):
         ``alpha / (2 * num_blocks)`` as in the notebook.
     use_tanh_scaling:
         If True, encode features as ``2*pi*tanh(x/3)``.
+    balanced_encoding:
+        In multi-axis mode, distribute components across edges before axes.
     fixed_circuit_file_name:
         Load a logical or transpiled QPY. Logical circuits are compiled for QPU
         execution; compatible transpiled circuits retain their layout. Encoding
@@ -365,6 +379,7 @@ class HeisenbergProjectiveQFM(BaseProjectiveQFM):
     topology: str = field(default="chain", kw_only=True)
     interaction_axes: tuple[str, ...] = field(default=("x", "y", "z"), kw_only=True)
     encoding_mode: str = field(default="shared_feature", kw_only=True)
+    balanced_encoding: bool = field(default=False, kw_only=True)
     measure_cross_observables: bool = field(default=False, kw_only=True)
     measure_all_pairs: bool = field(default=False, kw_only=True)
     coupling_mode: str = field(default="direct", kw_only=True)
@@ -435,6 +450,7 @@ class HeisenbergProjectiveQFM(BaseProjectiveQFM):
             X, self.q_enc, edges_act=self._encoding_edges(),
             interaction_axes=self.interaction_axes, encoding_mode=self.encoding_mode,
             use_tanh_scaling=self.use_tanh_scaling,
+            balanced_encoding=self.balanced_encoding,
         )
 
     def _coupling_metadata(self):
@@ -483,6 +499,7 @@ class HeisenbergProjectiveQFM(BaseProjectiveQFM):
             int(self.R),
             float(self.alpha),
             bool(self.use_tanh_scaling),
+            bool(self.balanced_encoding),
             bool(self.add_barriers),
             bool(self.use_fixed_phys_nodes),
             str(self.fixed_phys_nodes_file),
