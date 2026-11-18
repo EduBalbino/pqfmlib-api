@@ -91,6 +91,7 @@ experiments/sih-sus/*
 !experiments/sih-sus/README.md
 !experiments/sih-sus/tarefa-mortalidade-permanencia.ipynb
 !experiments/sih-sus/sih_sus_reference_moe_sweep.ipynb
+!experiments/sih-sus/sih_sus_stratified_moe_sweep.ipynb
 
 # Explicitly maintained tests
 tests/*
