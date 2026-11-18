@@ -34,3 +34,19 @@ The winning 26-qubit full edge-first case took 29.150 s. Its 139,281 feature row
 | Held-out test | 14,289 | 0.059 | 0.023 | 0.084 |
 
 Other wall stages on this case included 0.436 s for the inner PCA fit, 0.511 s for the refit PCA, 0.640 s for inner hybrid scaling, 0.535 s for refit scaling, 0.580 s for the outer ranking fit, 0.280 s for outer SHAP, 0.306 s for the outer prediction fit, and 1.237 s for the router. The 29.150 s is total trial time and these measurements overlap with the shared classical branch.
+
+## Dense queue
+
+Build the dense readout libraries with `python scripts/sih_dense_aot_pilot.py <topology-dir>` on the target GPU. Pass the resulting `dense-aot-pilot` directory in `PQFM_SIH_DENSE_AOT`, set `PQFM_SIH_BACKEND_REVISION`, and run the same notebook. This selects the previously pending cases and writes a separate `dense-results-tilelang-rows0.jsonl` journal so it can run next to the five-GPU sweep. The hosted dense worker uses GPU 5 and CPU IDs 82–87. The evaluator loads ahead-of-time libraries and reports a missing kernel as an error. The pilot runs at batch size one with CPU gate-matrix preparation. It times five warm rows per geometry.
+
+| Circuit | Rows/s | Estimated feature hours per strength |
+|---|---:|---:|
+| 19-qubit chain | 74.60 | 0.52 |
+| 19-qubit full | 47.09 | 0.82 |
+| 19-qubit native automatic | 69.19 | 0.56 |
+| 19-qubit native fixed | 60.43 | 0.64 |
+| 26-qubit full | 1.36 | 28.35 |
+| 26-qubit native automatic | 14.28 | 2.71 |
+| 26-qubit native fixed | 3.59 | 10.78 |
+
+These are throughput extrapolations from five synthetic feature rows per circuit. The 21 queued cases would require roughly 133 GPU-hours of readout at these rates. The 26-qubit full geometry accounts for roughly 85 of those hours. The pilot establishes execution feasibility. Held-out quality requires completed fold runs.

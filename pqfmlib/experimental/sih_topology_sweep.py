@@ -273,7 +273,7 @@ class CommutingXSweepReadout(_PrecompiledLocalReadout):
 class GenericTileLangSweepReadout:
     """Exact TileLang state evolution after binding structural zero rotations."""
 
-    def __init__(self, model, *, batch_size=1, profile=False, strategy='auto'):
+    def __init__(self, model, *, batch_size=1, profile=False, strategy='auto', artifacts=None):
         from dataclasses import replace
         from pqfmlib.core.tilelang_execution import TileLangExecutor
 
@@ -284,7 +284,23 @@ class GenericTileLangSweepReadout:
         order = tuple(prepared.param_order[i] for i in self.indices)
         self.prepared = replace(prepared, qc_t=circuit, param_order=order)
         self.executor = TileLangExecutor(precision='double', batch_size=batch_size, profile=profile,
-                                         strategy=strategy)
+                                         strategy=strategy, matrix_backend='auto' if artifacts is None else 'cpu')
+        if artifacts is not None:
+            from tilelang import tvm
+
+            directory = Path(artifacts)
+
+            def load(kernel, *signature):
+                key = (kernel, *signature)
+                cache = self.executor._kernel_cache
+                if key not in cache:
+                    library = directory / ('_'.join(map(str, key)) + '.so')
+                    if not library.is_file():
+                        raise FileNotFoundError(f'Missing offline TileLang kernel {library}')
+                    cache[key] = tvm.runtime.load_module(str(library))
+                return cache[key]
+
+            self.executor._launcher = load
 
     def transform(self, values):
         angles, _ = self.model._make_theta_matrix(values)
