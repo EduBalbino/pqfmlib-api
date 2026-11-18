@@ -107,4 +107,6 @@ tests/*
 !tests/experiments/
 tests/experiments/*
 !tests/experiments/test_tilelang_cone_reduction.py
+!tests/experiments/test_heisenberg_fused_aot.py
+!tests/experiments/test_heisenberg_sih_aot.py
 !tests/experiments/test_sia_classical_grid.py

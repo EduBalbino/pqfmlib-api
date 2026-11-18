@@ -333,7 +333,9 @@ class HeisenbergProjectiveQFM(BaseProjectiveQFM):
     Parameters
     ----------
     topology:
-        "chain" preserves the original schedule. "full" requires ideal=True.
+        "chain" preserves the original schedule. "full" and "plaquettes" require ideal=True.
+        "plaquettes" uses disjoint cycles of up to four consecutive logical qubits
+        and a single edge for a two-qubit remainder.
         "native" requires ideal=False and uses the induced QPU subgraph on
         q_enc selected physical nodes, pinned as the initial transpiler layout.
         Fixed QPY files support both encodings and all available topologies.
@@ -419,10 +421,10 @@ class HeisenbergProjectiveQFM(BaseProjectiveQFM):
         self.metadata_output_path = None
 
     def _validate_topology(self):
-        if self.topology not in ("chain", "native", "full"):
-            raise ValueError("topology must be 'chain', 'native', or 'full'.")
-        if self.topology == "full" and not self.ideal:
-            raise ValueError("topology='full' requires ideal=True.")
+        if self.topology not in ("chain", "native", "full", "plaquettes"):
+            raise ValueError("topology must be chain, native, full, or plaquettes.")
+        if self.topology in ("full", "plaquettes") and not self.ideal:
+            raise ValueError(f"topology={self.topology!r} requires ideal=True.")
         if self.topology == "native" and self.ideal:
             raise ValueError("topology='native' requires ideal=False and a target QPU.")
 
@@ -662,6 +664,22 @@ class HeisenbergProjectiveQFM(BaseProjectiveQFM):
             if self.topology == "full":
                 self.edges_act = [(i, j) for i in range(self.q_enc)
                                   for j in range(i + 1, self.q_enc)]
+            elif self.topology == "plaquettes":
+                self.edges_act = []
+                blocks, remainder = divmod(self.q_enc, 4)
+                sizes = [4] * blocks
+                if remainder == 1 and sizes:
+                    sizes[-1] = 3
+                    sizes.append(2)
+                elif remainder:
+                    sizes.append(remainder)
+                start = 0
+                for size in sizes:
+                    stop = start + size
+                    self.edges_act.extend((q, q + 1) for q in range(start, stop - 1))
+                    if size > 2:
+                        self.edges_act.append((start, stop - 1))
+                    start = stop
             self.phys_nodes = list(range(self.q_enc))
             return
 

@@ -83,6 +83,19 @@ class HeisenbergTopologyTests(unittest.TestCase):
         qfm = HeisenbergProjectiveQFM(name_file='test', topology='full')
         self.assertEqual(clone(qfm).topology, 'full')
 
+    def test_plaquettes_cover_wide_register_with_chain_edge_budget(self):
+        for qubits in (26, 33):
+            qfm = HeisenbergProjectiveQFM(name_file="test", q_enc=qubits, topology="plaquettes")
+            qfm.prepare_layout()
+            self.assertEqual(len(qfm.edges_act), qubits - 1)
+            self.assertEqual({q for edge in qfm.edges_act for q in edge}, set(range(qubits)))
+            components = [{q} for q in range(qubits)]
+            for a, b in qfm.edges_act:
+                merged = components[a] | components[b]
+                for q in merged:
+                    components[q] = merged
+            self.assertEqual(max(map(len, components)), 4)
+
     def test_full_fit_transform_and_run_match_exact_reference(self):
         X = np.array([[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]])
         with tempfile.TemporaryDirectory() as folder:
