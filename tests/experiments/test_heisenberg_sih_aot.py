@@ -139,3 +139,43 @@ def test_wide_offline_sih_against_bound_circuits(tmp_path, qubits, mode, balance
                         (2*(a.conj()*b).imag).sum()])
         reference.append(row)
     np.testing.assert_allclose(observed, reference, rtol=0, atol=1e-9)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required')
+@pytest.mark.parametrize('topology,mode', [('full', 'commuting_x'), ('native', 'forest')])
+def test_specialized_topology_readouts_match_bound_qiskit(tmp_path, topology, mode):
+    import json
+
+    from pqfmlib import HeisenbergProjectiveQFM
+    from pqfmlib.experimental.sih_topology_sweep import (
+        CommutingXSweepReadout, ForestSweepReadout, build_commuting_x, build_forest,
+        commuting_x_plan, forest_plan,
+    )
+
+    snapshot = tmp_path / 'tree.json'
+    snapshot.write_text(json.dumps({
+        'schema_version': 1, 'coupling_edges': [[0, 1], [0, 3], [1, 2], [3, 4]],
+    }))
+    inputs = np.random.default_rng(514).normal(size=(3, 7 if topology == 'full' else 10))
+    native = dict(ideal=False, topology_file=str(snapshot)) if topology == 'native' else {}
+    model = HeisenbergProjectiveQFM(
+        name_file='sih-topology-test', q_enc=5, topology=topology, R=1, alpha=.2,
+        framework='tilelang', expectation_method='exact', encoding_mode='multi_axis',
+        balanced_encoding=True, **native,
+    ).fit(inputs)
+    if mode == 'commuting_x':
+        degree = commuting_x_plan(model)[1].shape[1]
+        build_commuting_x(tmp_path, 5, inputs.shape[1], degree, batch=2, threads=32)
+        reader = CommutingXSweepReadout(model, tmp_path)
+    else:
+        edges = len(forest_plan(model)[1])
+        build_forest(tmp_path, 5, inputs.shape[1], edges, batch=2, threads=32)
+        reader = ForestSweepReadout(model, tmp_path)
+    angles, _ = model._make_theta_matrix(inputs)
+    prepared = model._prepared_execution
+    reference = []
+    for row in angles:
+        circuit = prepared.qc_t.assign_parameters(dict(zip(prepared.param_order, row)))
+        state = Statevector.from_instruction(circuit)
+        reference.append([state.expectation_value(group[0]).real for group in prepared.obs_isa_broadcast])
+    np.testing.assert_allclose(reader.transform(inputs), reference, rtol=0, atol=1e-11)

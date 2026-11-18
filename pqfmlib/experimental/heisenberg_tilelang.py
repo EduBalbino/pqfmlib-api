@@ -5,7 +5,7 @@ would reduce floating-point rounding; no gates or observables are approximated.
 """
 
 import time
-from functools import lru_cache
+from functools import lru_cache, wraps
 
 import numpy as np
 import torch
@@ -13,7 +13,19 @@ import tilelang
 import tilelang.language as T
 
 
-@tilelang.jit(target="cuda", execution_backend="tvm_ffi")
+def _runtime_kernel(factory):
+    @lru_cache(maxsize=1)
+    def compiler():
+        return tilelang.jit(target="cuda", execution_backend="tvm_ffi")(factory)
+
+    @wraps(factory)
+    def specialize(*args, **kwargs):
+        return compiler()(*args, **kwargs)
+
+    return specialize
+
+
+@_runtime_kernel
 def apply_gate(size: int, width: int, batch: int, parity: bool = False):
     dimension = 1 << width
 
@@ -45,7 +57,7 @@ def apply_gate(size: int, width: int, batch: int, parity: bool = False):
     return kernel
 
 
-@tilelang.jit(target="cuda", execution_backend="tvm_ffi")
+@_runtime_kernel
 def apply_cone_gate(size: int, batch: int, cones: int, gates: int, parity: bool):
     @T.prim_func
     def kernel(state: T.Tensor((cones * batch, size, 2), "float64"),
@@ -75,7 +87,7 @@ def apply_cone_gate(size: int, batch: int, cones: int, gates: int, parity: bool)
     return kernel
 
 
-@tilelang.jit(target="cuda", execution_backend="tvm_ffi")
+@_runtime_kernel
 def cone_observable_partials(size: int, batch: int, cones: int, observables: int):
     blocks = (size // 2 + 127) // 128
 
