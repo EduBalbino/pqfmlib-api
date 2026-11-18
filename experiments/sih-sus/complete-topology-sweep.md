@@ -50,3 +50,13 @@ Build the dense readout libraries with `python scripts/sih_dense_aot_pilot.py <t
 | 26-qubit native fixed | 3.59 | 10.78 |
 
 These are throughput extrapolations from five synthetic feature rows per circuit. The 21 queued cases would require roughly 133 GPU-hours of readout at these rates. The 26-qubit full geometry accounts for roughly 85 of those hours. The pilot establishes execution feasibility. Held-out quality requires completed fold runs.
+
+## Fold data in RAM
+
+The notebook shares the two PCA estimators and all six projected roles across circuits with the same PCA width. Each estimator is fitted only on its corresponding training role. The cache is read-only and scoped to the current fold, and the existing fold-preparation future keeps the next fold's classical matrices available. On the first full fold, the 139,281 projected rows at width 50 occupy 55,712,400 bytes, about 53 MiB. This avoids repeated covariance eigendecompositions and projections while preserving every row and the stable PCA orientation.
+
+When multiple GPUs are visible, the CPU coordinator prepares the outer representation during the hybrid grid search. The final XGBoost refit still waits for the winning candidate. Single-GPU execution keeps these stages sequential. `PQFM_SIH_RAM_CACHE=0` and `PQFM_SIH_PREFETCH_REFIT=0` disable the respective changes for comparison. Per-trial timing events show the refit overlap, and the shared cache reports its size once per PCA width.
+
+On the hosted 26-qubit disconnected-ring edge-first case at strength 0.10, all four held-out prediction arrays were bitwise identical before and after the change across 14,289 rows. The refit feature stage overlapped the hybrid search by 2.668 s. The new trial took 14.038 s under the sequential five-GPU allocation. The prior 30.138 s measurement used the six-GPU allocation with concurrent trials, so the difference includes scheduling and resource allocation.
+
+The dense queue can increase `PQFM_SIH_QUANTUM_SHARDS` from the default three to the number of sweep GPUs. Each shard evaluates disjoint rows and reassembles the original order. The hosted handoff waits for the five-GPU sweep to finish and the dense worker to write a completed case, then resumes the dense journal on GPUs 0–4 with five shards. GPU 5 becomes available for kernel experiments. Five-way scaling is a planning bound until a full dense case is timed after the handoff.
