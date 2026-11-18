@@ -176,6 +176,7 @@ class BaseProjectiveQFM(TransformerMixin, BaseEstimator):
             fakebackend=self.fakebackend,
             native_topology=self.topology == "native",
         )
+
     def _validate_expectation_method(self) -> None:
         if self.framework == "tilelang":
             if self.expectation_method not in ("exact", "statevector", "shots"):
@@ -189,8 +190,6 @@ class BaseProjectiveQFM(TransformerMixin, BaseEstimator):
             return
         if self.framework == "cudaq" and self.expectation_method == "exact":
             return
-        if self.framework == "tilelang":
-            raise ValueError("TileLang requires expectation_method='exact'.")
         if self.expectation_method not in ("shots", "statevector"):
             raise ValueError("expectation_method must be 'shots' or 'statevector'.")
         if self.expectation_method == "statevector":
