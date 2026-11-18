@@ -89,6 +89,7 @@ experiments/sia/*
 !experiments/sih-sus/
 experiments/sih-sus/*
 !experiments/sih-sus/README.md
+!experiments/sih-sus/complete-topology-sweep.md
 !experiments/sih-sus/tarefa-mortalidade-permanencia.ipynb
 !experiments/sih-sus/sih_sus_reference_moe_sweep.ipynb
 !experiments/sih-sus/sih_sus_stratified_moe_sweep.ipynb
@@ -110,4 +111,5 @@ tests/experiments/*
 !tests/experiments/test_tilelang_cone_reduction.py
 !tests/experiments/test_heisenberg_fused_aot.py
 !tests/experiments/test_heisenberg_sih_aot.py
+!tests/experiments/test_sih_topology_sweep.py
 !tests/experiments/test_sia_classical_grid.py

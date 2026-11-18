@@ -1,13 +1,42 @@
 """Offline SIH-SUS topology profiles, circuit exports, and exact TileLang simulation."""
 
 from pathlib import Path
+from contextlib import contextmanager
 import csv
+import fcntl
 import json
+import os
 
 import numpy as np
 
 
-def topology_profiles(root):
+@contextmanager
+def locked_sweep_journal(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(path.suffix + '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        records = {}
+        with path.open('a+b') as journal:
+            journal.seek(0)
+            while True:
+                offset = journal.tell()
+                line = journal.readline()
+                if not line:
+                    break
+                if not line.endswith(b'\n'):
+                    journal.truncate(offset)
+                    journal.flush()
+                    os.fsync(journal.fileno())
+                    break
+                record = json.loads(line)
+                name = record['name']
+                if name in records:
+                    raise ValueError(f'Duplicate sweep case {name} in {path}')
+                records[name] = record
+        yield records
+
+
+def topology_profiles(root, *, complete=False):
     """Preserve 50 PCA inputs and cancel the block-dependent angle normalization."""
     profiles = {}
     for qubits in (19, 26):
@@ -15,7 +44,7 @@ def topology_profiles(root):
             layouts = ('auto', 'fixed') if topology == 'native' else ('auto',)
             for layout in layouts:
                 for label in ('axes', 'balanced', 'shared'):
-                    strengths = (.05, .1, .2) if label == 'balanced' else (.1,)
+                    strengths = (.05, .1, .2) if complete or label == 'balanced' else (.1,)
                     for strength in strengths:
                         name = f'q{qubits}_{topology}_{layout}_{label}_s{round(100*strength):02d}'
                         config = dict(q_enc=qubits, n_components=50, topology=topology,
@@ -92,18 +121,21 @@ def write_drawings(root, name, model, active):
     plt.close(fig)
 
 
-def prepare_topology_sweep(root, factory, base, draw=False):
+def prepare_topology_sweep(root, factory, base, draw=False, *, complete=False):
     from pqfmlib.experimental.heisenberg_tilelang import causal_cones
 
     root = Path(root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
     if not (root / 'graphs' / 'sherbrooke.json').exists():
         write_native_graph(root, factory, base)
     manifest = {}
-    for name, (config, strength) in topology_profiles(root).items():
-        model = factory(base | config).fit(np.zeros((1, 50)))
+    profiles = topology_profiles(root, complete=complete)
+    for name, (config, strength) in profiles.items():
+        probe = np.zeros((1, config['n_components']))
+        model = factory(base | config).fit(probe)
         blocks = model.theta_info['num_blocks']
         config['alpha'] = strength * blocks
-        model = factory(base | config).fit(np.zeros((1, 50)))
+        model = factory(base | config).fit(probe)
         active = active_circuit(model)
         gates = [([active.find_bit(q).index for q in inst.qubits], None, None)
                  for inst in active.data]
