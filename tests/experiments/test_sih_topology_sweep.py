@@ -1,4 +1,6 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import numpy as np
 import pytest
@@ -62,9 +64,18 @@ def test_dense_readout_loads_offline_kernels_without_compiling(tmp_path, monkeyp
 
     executor._launcher = export
     expected = builder.transform(rows)
-    offline = GenericTileLangSweepReadout(model, artifacts=tmp_path)
-    monkeypatch.setattr(offline.executor, '_kernels', None)
-    np.testing.assert_allclose(offline.transform(rows), expected, rtol=0, atol=1e-12)
+    ready = Barrier(3)
+
+    def read(request_rows):
+        offline = GenericTileLangSweepReadout(model, artifacts=tmp_path)
+        monkeypatch.setattr(offline.executor, '_kernels', None)
+        ready.wait(timeout=10)
+        return offline.transform(request_rows)
+
+    with ThreadPoolExecutor(max_workers=3) as workers:
+        results = list(workers.map(read, (rows[:1], rows[1:], rows[::-1])))
+    np.testing.assert_allclose(np.concatenate(results[:2]), expected, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(results[2], expected[::-1], rtol=0, atol=1e-12)
 
 
 def test_paper_extension_preserves_original_profiles_and_kernel_shapes(tmp_path):

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from contextlib import contextmanager
+from threading import Lock
 import csv
 import fcntl
 import json
@@ -308,6 +309,38 @@ class CommutingXSweepReadout(_PrecompiledLocalReadout):
         super().__init__(model, directory, commuting_x_plan(model))
 
 
+_OFFLINE_KERNEL_LOCK = Lock()
+_OFFLINE_KERNELS = {}
+
+
+class _OfflineKernel:
+    def __init__(self, module):
+        self.module = module
+        self.ready = False
+
+    def __call__(self, *args):
+        if not self.ready:
+            # TVM resolves the embedded CUDA function lazily on the first launch.
+            with _OFFLINE_KERNEL_LOCK:
+                if not self.ready:
+                    result = self.module(*args)
+                    self.ready = True
+                    return result
+        return self.module(*args)
+
+
+def _load_offline_kernel(library):
+    from tilelang import tvm
+
+    library = library.resolve()
+    with _OFFLINE_KERNEL_LOCK:
+        if library not in _OFFLINE_KERNELS:
+            if not library.is_file():
+                raise FileNotFoundError(f'Missing offline TileLang kernel {library}')
+            _OFFLINE_KERNELS[library] = _OfflineKernel(tvm.runtime.load_module(str(library)))
+        return _OFFLINE_KERNELS[library]
+
+
 class GenericTileLangSweepReadout:
     """Exact TileLang state evolution after binding structural zero rotations."""
 
@@ -327,8 +360,6 @@ class GenericTileLangSweepReadout:
                                          strategy=strategy, parity_gates=parity_gates,
                                          matrix_backend=matrix_backend or ('auto' if artifacts is None else 'cpu'))
         if artifacts is not None:
-            from tilelang import tvm
-
             directory = Path(artifacts)
 
             def load(kernel, *signature):
@@ -336,9 +367,7 @@ class GenericTileLangSweepReadout:
                 cache = self.executor._kernel_cache
                 if key not in cache:
                     library = directory / ('_'.join(map(str, key)) + '.so')
-                    if not library.is_file():
-                        raise FileNotFoundError(f'Missing offline TileLang kernel {library}')
-                    cache[key] = tvm.runtime.load_module(str(library))
+                    cache[key] = _load_offline_kernel(library)
                 return cache[key]
 
             self.executor._launcher = load
