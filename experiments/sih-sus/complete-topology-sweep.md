@@ -174,3 +174,29 @@ Use `scripts/sih_q19_native_refine.py` to compare the previous reader, indexed f
 The hosted RTX 3070 comparison timed 2,051 identical rows over five alternating runs per reader. The automatic layout improved from 11,198 to 22,811 rows/s (2.04×), and the fixed layout from 11,413 to 23,410 rows/s (2.05×). The maximum absolute difference across 259 rows at each of three strengths was $2.3\times10^{-15}$. These rates measure readout including transfers.
 
 The first full fold-six cases after the handoff took 14.627 s for automatic and 14.623 s for fixed, both at strength 0.025. Each case scored 14,289 held-out admissions and ran all 27 XGBoost candidates. That is approximately 977 held-out admissions per second end to end. The preceding revision's median was approximately 911–913 admissions per second across the completed cases for those layouts.
+
+## SIH-SUS shuffled-stratified sweep checkpoint
+
+The hosted sweep stopped on 2026-11-19 UTC (November 18 in São Paulo). The two durable TileLang journals contain 506 of 3,150 planned circuit–fold cases across the 15-fold protocol. Each completed case is a reusable checkpoint for its circuit, strength and fold.
+
+| Lane | Saved cases | Planned cases | Journal relative to the hosted archive |
+|---|---:|---:|---|
+| Fast | 203 | 2,415 | `sih-topologies-all-folds/results-tilelang-rows0.jsonl` |
+| Dense | 303 | 735 | `sih-topologies-complete/dense-results-tilelang-rows0.jsonl` |
+
+The archive lives on Pichau under `outputs/sih-hosted-archive/final/`. The SHA-256 of `sih-hosted-final.tar.zst` is `7f4b0f7747ab7d7158bd14483c344c8b842a82896f3d63e9896f3ee188bfbca4`. `source-inventory.jsonl` records original filesystem birth times in UTC, nanosecond modification and change times, symlink targets and SHA-256 digests of regular files. Use the inventory for creation dates. The filesystem assigns its own birth time when extracting a new file on Pichau. The hosted input parquet and the corresponding local modeling input have SHA-256 `395b5b355d4c227074e598f4224b0fb6cbb13ec55a4184ff2f2bae5f6ab0436b`.
+
+The archived `sih-dense-hill/` contains the executed notebook versions, launchers, source overlay, compiled libraries and tuning data. The fast and dense launchers are `run_paper_cells.py` and `run_q19_cells.py`. To resume, use writable copies of the journals, preserve the case IDs and 15-fold plan, and point the launchers to the restored data and precompiled TileLang files. Check absolute hosted paths in the saved launchers, symlinks and tuning indices. Use an offline rebuild for a different CUDA target. Keep the backend revision with each new observation so comparisons of execution time can control for the reader version.
+
+### Commit order
+
+| Order | Existing commits | Scope |
+|---|---|---|
+| 1 | `8cb3c9d`, `0687ef0` | Offline TileLang kernels and the earlier temporal encoding experiment |
+| 2 | `0975665`, `472593a`, `adb4636` | Shuffled-stratified protocol, telemetry and the 19-qubit baseline |
+| 3 | `22da07e`, `a5e0d8f`, `91354b4`, `4aabe6b` | Topology and encoding catalog, resumable grid, dense lane, fold PCA reuse and refit overlap |
+| 4 | `87d5f83`, `042f9e5`, `9ac7a8c`, `51e23f3` | Matched finalist control, full 15-fold plan, bounded-frontier reader and seven-strength extension |
+| 5 | `6c12d2d`, `59a9733`, `a061d11`, `c955455`, `6dc7129` | Failure diagnostics, safe first launch, 19-qubit optimizations and measured native-layout handoff |
+| 6 | This checkpoint | Archive provenance and resume instructions |
+
+Prediction journals, compiled libraries, and machine-specific launch material live in the artifact archive.
