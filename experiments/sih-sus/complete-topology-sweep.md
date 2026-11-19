@@ -76,3 +76,17 @@ Select three standalone-hybrid finalists and two soft-MoE finalists from the com
 Use a fresh `PQFM_SIH_TOPOLOGY_DIR` containing a copy of the completed manifest and access to the same precompiled artifact directory. Set `PQFM_SIH_TOPOLOGY_COMPLETE=1`, `PQFM_SIH_TOPOLOGY_RUN=1`, and `PQFM_SIH_BACKEND_REVISION=precompiled-v1`. Set `PQFM_SIH_TOPOLOGY_MATCH` to the five table keys separated by commas and `PQFM_SIH_STRATIFIED_FOLDS=2,3,4,5,6,7,8,9,10,11,12,13,14,15`. The hosted confirmation uses GPU 5 and CPU IDs 82–87 while the dense queue continues on GPUs 0–4. Resume with the same journal if interrupted.
 
 Use `python scripts/sih_confirmation_report.py <scores.csv>` to compare AP on matched folds. The report gives paired gaps and win counts against the shared classical baseline, direct comparisons within each objective, and the effect of routing on each hybrid. Repeated folds share admissions across repeats. Interpret their estimates as paired comparisons on this dataset.
+
+## Exhaustive evaluation across all folds
+
+The exhaustive run supersedes the finalist-only execution. It crosses all 90 profiles with all 15 full shuffled folds, for 1,350 circuit–fold attempts and 36,450 hybrid grid candidates. The 69 fast profiles yield 1,035 attempts and the 21 dense profiles yield 315. Each lane shares one classical grid per fold, so running both independently adds at most 810 classical grid candidates across the experiment. Previously completed cases retain their original predictions and timing provenance.
+
+Run the notebook with `PQFM_SIH_TOPOLOGY_COMPLETE=1`, `PQFM_SIH_TOPOLOGY_RUN=1`, `PQFM_SIH_STRATIFIED_FOLDS=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15`, and the complete manifest. Leave the topology match unrestricted. The fast lane uses GPU 5 and a separate journal seeded from the 69-case first-fold screen and the completed confirmation attempts. The dense lane resumes its original journal on GPUs 0–4 at the next case boundary. Each lane keeps the same dataset, split roles, and full 27-candidate hybrid grid.
+
+| Measurement | Cases | Median wall per case | Range |
+|---|---:|---:|---:|
+| Fast sequential, five GPUs | 66 | 14.83 s | 13.39–19.57 s |
+| Confirmation, one GPU | 3 | 47.38 s | 46.43–62.80 s |
+| Dense, completed full first-fold cases | 4 | 35.04 min | 28.66–36.91 min |
+
+The one-GPU measurements imply roughly 13–17 hours for the remaining fast cases, with uncertainty from the mix of topologies and fold preparation. The dense pilot estimated about 133 GPU-hours per fold from five warm rows per geometry. Across 15 folds that is roughly 2,000 GPU-hours. Dividing by five gives about 17 days under ideal scaling at the measured single-GPU rates. The initial full dense runs do not establish that scaling. The 26-qubit full shared-feature circuit dominates the pilot projection.
