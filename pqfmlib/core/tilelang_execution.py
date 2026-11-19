@@ -129,7 +129,7 @@ class TileLangExecutor:
     mps = False
 
     def __init__(self, *, precision="double", seed=42, batch_size=128, strategy="auto", profile=False,
-                 matrix_backend="auto", kernel_backend="auto"):
+                 matrix_backend="auto", kernel_backend="auto", parity_gates=False):
         validate_precision(precision)
         if isinstance(seed, bool) or not isinstance(seed, Integral) or not 0 <= seed < 2**64:
             raise ValueError("TileLang seed must be an integer between 0 and 2**64-1.")
@@ -149,6 +149,7 @@ class TileLangExecutor:
         self.batch_size, self.strategy, self.profile = batch_size, strategy, bool(profile)
         self.matrix_backend = matrix_backend
         self.kernel_backend = kernel_backend
+        self.parity_gates = parity_gates
         self._prepared = None
         self._compiled = None
         self._constants = {}
@@ -178,6 +179,8 @@ class TileLangExecutor:
             self._matrix_builder, self._cone_metadata = None, {}
             compile_seconds = perf_counter() - started
         job = self._compiled
+        pauli_pairs = {index for index, key in enumerate(job.matrix_keys)
+                       if all(name in ("rxx", "ryy", "rzz") for name, _, _ in key)} if self.parity_gates else set()
         n = job.circuit.num_qubits
         if n < 1:
             raise ValueError("TileLang requires at least one qubit.")
@@ -204,7 +207,7 @@ class TileLangExecutor:
                      sampled_shots=len(theta) * shots * len(job.sampling_groups) if sampling else 0)
         stats.update(kernel_backend=self.kernel_backend, grouped_gate_calls=0, fast_pauli_calls=0)
         if self._matrix_builder is None and self.matrix_backend != "cpu" and job.matrix_keys:
-            self._matrix_builder = MatrixBuilder(self._torch, self._kernels, job.matrix_keys)
+            self._matrix_builder = MatrixBuilder(self._torch, self._launcher, job.matrix_keys)
         builder = self._matrix_builder if self.matrix_backend != "cpu" else None
         gpu_matrices = builder is not None and len(builder.plan["fallback"]) < len(job.matrix_keys)
         stats["matrix_backend"] = ("hybrid" if builder.plan["fallback"] else "gpu") if gpu_matrices else "cpu"
@@ -280,12 +283,16 @@ class TileLangExecutor:
                         state[:, 0, 0] = 1.
                         output = torch.empty_like(state)
                         for matrix_id, sites in calls:
-                            self._launcher(gate_name, cone_size, batch, len(sites), self._dtype)(
-                                state, matrix_views[matrix_id], output,
-                                sites[0], sites[1] if len(sites) == 2 else 0)
-                            state, output = output, state
+                            if matrix_id in pauli_pairs and len(sites) == 2:
+                                self._launcher("apply_batched_pauli_pair", cone_size, batch, self._dtype)(
+                                    state, matrix_views[matrix_id], *sites)
+                            else:
+                                self._launcher(gate_name, cone_size, batch, len(sites), self._dtype)(
+                                    state, matrix_views[matrix_id], output,
+                                    sites[0], sites[1] if len(sites) == 2 else 0)
+                                state, output = output, state
+                                stats["grouped_gate_calls"] += int(grouped)
                             stats["gate_calls"] += 1
-                            stats["grouped_gate_calls"] += int(grouped)
                     if sampling:
                         del output
                         sampled = sample_cone(self, job, cone, state, shots, generator, stats)

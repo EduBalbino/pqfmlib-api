@@ -44,8 +44,8 @@ def pack_matrix_plan(keys):
 class MatrixBuilder:
     """Upload fixed metadata once; upload parameters rather than all matrices."""
 
-    def __init__(self, torch, kernels, keys):
-        self.torch, self.kernels, self.keys = torch, kernels, keys
+    def __init__(self, torch, launcher, keys):
+        self.torch, self.launcher, self.keys = torch, launcher, keys
         self.plan = pack_matrix_plan(keys)
         self.device = None
         self.constants = {}
@@ -68,9 +68,9 @@ class MatrixBuilder:
             angles = torch.empty((len(plan["values"]), batch), dtype=torch.float64, device="cuda")
             matrices = torch.empty((len(self.keys), batch, 4, 4, 2),
                                    dtype=torch.float32 if dtype == "float32" else torch.float64, device="cuda")
-            self.kernels.affine_angles(batch, parameters.shape[1], len(plan["values"]), len(plan["columns"]))(parameters,
+            self.launcher("affine_angles", batch, parameters.shape[1], len(plan["values"]), len(plan["columns"]))(parameters,
                 device["offsets"], device["columns"], device["coefficients"], device["values"], angles)
-            self.kernels.fused_matrices(batch, len(self.keys), len(plan["instructions"]), len(plan["values"]), dtype)(
+            self.launcher("fused_matrices", batch, len(self.keys), len(plan["instructions"]), len(plan["values"]), dtype)(
                 device["ranges"], device["instructions"], angles, matrices)
         if plan["fallback"]:
             from time import perf_counter

@@ -90,3 +90,37 @@ Run the notebook with `PQFM_SIH_TOPOLOGY_COMPLETE=1`, `PQFM_SIH_TOPOLOGY_RUN=1`,
 | Dense, completed full first-fold cases | 4 | 35.04 min | 28.66–36.91 min |
 
 The one-GPU measurements imply roughly 13–17 hours for the remaining fast cases, with uncertainty from the mix of topologies and fold preparation. The dense pilot estimated about 133 GPU-hours per fold from five warm rows per geometry. Across 15 folds that is roughly 2,000 GPU-hours. Dividing by five gives about 17 days under ideal scaling at the measured single-GPU rates. The initial full dense runs do not establish that scaling. The 26-qubit full shared-feature circuit dominates the pilot projection.
+
+## Dense backend hillclimb
+
+The full shared-feature circuit repeats interactions around a small set of high-degree wires. The circuit is a product of edge operators with local preparation. Two edge operators on disjoint wires commute. A schedule that preserves each wire's original edge sequence therefore preserves the unitary. The planner checks that condition for the full-graph schedule and uses the same per-wire dependencies for a bounded search on native layouts. The 19-qubit and 26-qubit full graphs have schedules with four and five simultaneously live wires respectively. Both 26-qubit native layouts also have five-wire schedules.
+
+Let the current density matrix be \(\rho_A\) on the live wires \(A\). A first-use wire enters in its product-state density matrix \(\rho_q\), so the enlarged state is \(\rho_A\otimes\rho_q\). An edge group applies \(U\rho U^\dagger\). Once a wire has no remaining gates, its local observables follow from its reduced density matrix and subsequent gates act only on the remaining wires. Tracing it out at that point leaves all remaining observables unchanged. The TileLang kernel implements these three operations in FP64 shared memory and replaces each retired slot with \(|0\rangle\langle0|\) for reuse. The widest supported frontier uses a \(32\times32\) density matrix per row instead of 67,108,864 amplitudes for the 26-qubit full statevector.
+
+For the three geometries outside the five-wire frontier limit, the revised statevector path batches 32 input rows, builds the fused gate matrices on GPU, and updates the two invariant parity pairs in place for products of \(XX\), \(YY\), and \(ZZ\) rotations. Every amplitude pair is owned by one thread. Products of those rotations preserve parity and have zero entries between the two pairs. Other gates use the original grouped evolution. The offline loader also resolves matrix-builder kernels and pads only the final batch, dropping dummy outputs before returning.
+
+| Geometry | Previous exact readout | Best checked readout | Local speedup |
+|---|---:|---:|---:|
+| 19-qubit chain shared | 84.83 rows/s | 1,109 rows/s, batch 32 | 13.1× |
+| 19-qubit full shared | 59.82 rows/s | 114,902 rows/s, frontier batch 512 / 64 threads | 1,921× |
+| 26-qubit full shared | 0.866 rows/s | 36,796 rows/s, frontier batch 256 / 128 threads | 42,476× |
+
+These are warmed RTX 2060 readout measurements, including transfers, with three repeats. The frontier tests processed 4,096 rows per repeat. The statevector tests processed 64 rows for 19 qubits and eight rows for 26 qubits. The two full-circuit frontier checks agreed with the old FP64 TileLang statevector to maximum absolute errors of \(1.9\times 10^{-15}\) and \(2.6\times 10^{-15}\). The speedups apply to readout. Fold training and routing timings are separate.
+
+Build and validate the hosted revision with `python scripts/sih_dense_hill_build.py <manifest.json> <dense-aot-pilot> <output>`. The script checks each geometry against the previous precompiled TileLang reader before emitting `settings.json`. Set `PQFM_SIH_DENSE_TUNING` to this file and set a new backend revision when resuming the dense journal. The hosted handoff pauses the fast lane at a saved case while it uses GPU 5 for the build and readout comparison. It resumes that lane before waiting for a dense checkpoint.
+
+All seven geometry checks passed on one hosted RTX 3070. The builder timed 256 rows per statevector repeat and 4,096 per frontier repeat after warm-up.
+
+| Geometry | Revised hosted rows/s | Readout seconds for 139,281 rows on one GPU |
+|---|---:|---:|
+| 19-qubit chain | 10,422 | 13.36 |
+| 19-qubit full | 230,704 | 0.60 |
+| 19-qubit native automatic | 550 | 253.27 |
+| 19-qubit native fixed | 260 | 535.79 |
+| 26-qubit full | 97,480 | 1.43 |
+| 26-qubit native automatic | 109,810 | 1.27 |
+| 26-qubit native fixed | 109,022 | 1.28 |
+
+The maximum absolute error versus the hosted batch-one FP64 reader was \(2.7\times10^{-15}\) over the parity samples. These rates project to about 10 GPU-hours of readout for all 315 dense cases, before fold preparation, XGBoost, and scheduling. The projection extrapolates synthetic rows. The five-GPU end-to-end runtime remains to be measured on the resumed sweep. The two 19-qubit native layouts account for about 98% of the revised projected readout time.
+
+The resumed hosted sweep completed the 19-qubit full shared-feature case at strength 0.20 in 20.039 s end to end with all 27 XGBoost candidates. The same geometry at strengths 0.05 and 0.10 took 2,012.209 s and 2,025.526 s with the old backend. These are different strengths and establish a geometry-level timing comparison. The 20.039 s case includes the shared classical branch after resume. The revised dense median requires more cases, particularly the two slower 19-qubit native layouts.

@@ -273,7 +273,8 @@ class CommutingXSweepReadout(_PrecompiledLocalReadout):
 class GenericTileLangSweepReadout:
     """Exact TileLang state evolution after binding structural zero rotations."""
 
-    def __init__(self, model, *, batch_size=1, profile=False, strategy='auto', artifacts=None):
+    def __init__(self, model, *, batch_size=1, profile=False, strategy='auto', artifacts=None,
+                 matrix_backend=None, parity_gates=False):
         from dataclasses import replace
         from pqfmlib.core.tilelang_execution import TileLangExecutor
 
@@ -283,8 +284,10 @@ class GenericTileLangSweepReadout:
         self.indices = [i for i, p in enumerate(prepared.param_order) if p in circuit.parameters]
         order = tuple(prepared.param_order[i] for i in self.indices)
         self.prepared = replace(prepared, qc_t=circuit, param_order=order)
+        self.offline_batch = batch_size if artifacts is not None else 1
         self.executor = TileLangExecutor(precision='double', batch_size=batch_size, profile=profile,
-                                         strategy=strategy, matrix_backend='auto' if artifacts is None else 'cpu')
+                                         strategy=strategy, parity_gates=parity_gates,
+                                         matrix_backend=matrix_backend or ('auto' if artifacts is None else 'cpu'))
         if artifacts is not None:
             from tilelang import tvm
 
@@ -304,7 +307,11 @@ class GenericTileLangSweepReadout:
 
     def transform(self, values):
         angles, _ = self.model._make_theta_matrix(values)
-        return self.executor.execute(self.prepared, angles[:, self.indices])[0]
+        parameters = angles[:, self.indices]
+        spare = (-len(parameters)) % self.offline_batch
+        if spare:
+            parameters = np.pad(parameters, ((0, spare), (0, 0)))
+        return self.executor.execute(self.prepared, parameters)[0][:len(values)]
 
 
 def forest_plan(model):

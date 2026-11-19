@@ -179,3 +179,29 @@ def test_specialized_topology_readouts_match_bound_qiskit(tmp_path, topology, mo
         state = Statevector.from_instruction(circuit)
         reference.append([state.expectation_value(group[0]).real for group in prepared.obs_isa_broadcast])
     np.testing.assert_allclose(reader.transform(inputs), reference, rtol=0, atol=1e-11)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required')
+def test_frontier_matches_bound_qiskit_with_reused_slots(tmp_path):
+    from pqfmlib import HeisenbergProjectiveQFM
+    from pqfmlib.experimental.sih_frontier_tilelang import (
+        FrontierSweepReadout, build_frontier, frontier_plan, frontier_shape,
+    )
+
+    inputs = np.random.default_rng(352).normal(size=(5, 11))
+    model = HeisenbergProjectiveQFM(
+        name_file='sih-frontier-test', q_enc=7, topology='full', R=1, alpha=.2,
+        framework='tilelang', expectation_method='exact', encoding_mode='shared_feature',
+    ).fit(inputs)
+    plan = frontier_plan(model)
+    assert plan is not None and plan[0] < model.q_enc
+    build_frontier(tmp_path, *frontier_shape(model, plan), batch=3, threads=64)
+    angles, _ = model._make_theta_matrix(inputs)
+    prepared = model._prepared_execution
+    expected = []
+    for row in angles:
+        circuit = prepared.qc_t.assign_parameters(dict(zip(prepared.param_order, row)))
+        state = Statevector.from_instruction(circuit)
+        expected.append([state.expectation_value(group[0]).real for group in prepared.obs_isa_broadcast])
+    np.testing.assert_allclose(FrontierSweepReadout(model, tmp_path).transform(inputs),
+                               expected, rtol=0, atol=1e-11)

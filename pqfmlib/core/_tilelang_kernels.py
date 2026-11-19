@@ -183,6 +183,33 @@ def apply_batched_gate_grouped(size: int, batch: int, width: int, dtype: str = "
 
 
 @tilelang.jit(target="cuda", execution_backend="tvm_ffi")
+def apply_batched_pauli_pair(size: int, batch: int, dtype: str = "float64"):
+    """Update disjoint amplitude pairs in place for products of XX, YY and ZZ rotations."""
+
+    @T.prim_func
+    def kernel(state: T.Tensor((batch, size, 2), dtype),
+               matrix: T.Tensor((batch, 4, 4, 2), dtype), q0: T.int32, q1: T.int32):
+        with T.Kernel(T.ceildiv(size // 2, 128), batch, threads=128) as (block, b):
+            i = T.cast(block * 128 + T.get_thread_binding(), "int64")
+            if i < size // 2:
+                a = (i & ((T.int64(1) << q0) - 1)) | ((i >> q0) << (q0 + 1))
+                z = a ^ (T.int64(1) << q0) ^ (T.int64(1) << q1)
+                row = 2 * ((a >> q1) & 1)
+                col = row ^ 3
+                ar, ai = state[b, a, 0], state[b, a, 1]
+                zr, zi = state[b, z, 0], state[b, z, 1]
+                dr, di = matrix[b, row, row, 0], matrix[b, row, row, 1]
+                er, ei = matrix[b, row, col, 0], matrix[b, row, col, 1]
+                fr, fi = matrix[b, col, row, 0], matrix[b, col, row, 1]
+                gr, gi = matrix[b, col, col, 0], matrix[b, col, col, 1]
+                state[b, a, 0] = dr * ar - di * ai + er * zr - ei * zi
+                state[b, a, 1] = dr * ai + di * ar + er * zi + ei * zr
+                state[b, z, 0] = fr * ar - fi * ai + gr * zr - gi * zi
+                state[b, z, 1] = fr * ai + fi * ar + gr * zi + gi * zr
+    return kernel
+
+
+@tilelang.jit(target="cuda", execution_backend="tvm_ffi")
 def pauli_partials_fast(size: int, qubits: int, batch: int, terms: int, dtype: str = "float64", paired: bool = False):
     effective_size = size // 2 if paired else size
     tiles = T.ceildiv(effective_size, 1024)
