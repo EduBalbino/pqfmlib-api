@@ -1,0 +1,10 @@
+{
+  "rows": 16178,
+  "columns": 1104,
+  "blocks": 2,
+  "exact": true,
+  "baseline_bytes": 71506760,
+  "reduced_bytes": 17664,
+  "baseline_return_ms": 168.47846101154573,
+  "reduced_return_ms": 8.107222995022312
+}

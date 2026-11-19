@@ -1,0 +1,173 @@
+diff --git a/src/tree/gpu_hist/histogram.cu b/src/tree/gpu_hist/histogram.cu
+index 55f4479..5b294bd 100644
+--- a/src/tree/gpu_hist/histogram.cu
++++ b/src/tree/gpu_hist/histogram.cu
+@@ -363,6 +363,33 @@ __global__ __launch_bounds__(StHistBound::kBlockThreads, StHistBound::kMinBlocks
+                                   node_hist.data(), offset, kStride);
+ }
+ 
++constexpr std::size_t kScalarNodesPerLaunch = 32;
++
++// By-value parameters keep the node descriptors off the allocator and transfer paths.
++struct ScalarHistogramBatch {
++  DeviceHistogramBuilder::ScalarHistogramNode nodes[kScalarNodesPerLaunch];
++  std::uint32_t block_offsets[kScalarNodesPerLaunch + 1];
++  std::uint32_t size;
++};
++static_assert(sizeof(ScalarHistogramBatch) < 2048);
++
++template <typename Policy, typename Accessor>
++__global__ __launch_bounds__(StHistBound::kBlockThreads, StHistBound::kMinBlocks)
++    void BatchedStHistKernel(Accessor const matrix, FeatureGroupsAccessor const feature_groups,
++                             common::Span<GradientPairInt64 const> gpair,
++                             const __grid_constant__ ScalarHistogramBatch batch) {
++  auto const* offsets = batch.block_offsets;
++  auto const node_idx = dh::SegmentId(offsets, offsets + batch.size + 1, blockIdx.x);
++  auto const blocks = offsets[node_idx + 1] - offsets[node_idx];
++  bst_idx_t const offset = (blockIdx.x - offsets[node_idx]) * Policy::kTileSize;
++  auto const stride = Policy::kTileSize * blocks;
++  auto const& node = batch.nodes[node_idx];
++  extern __align__(cuda::std::alignment_of_v<GradientPairInt64>) __shared__ char shmem[];
++  HistKernelOneNodeTarget<Policy>(matrix, feature_groups[blockIdx.y], node.rows, gpair.data(),
++                                  reinterpret_cast<GradientPairInt64*>(shmem),
++                                  node.histogram.data(), offset, stride);
++}
++
+ /**
+  * @brief Kernel for the multi-target histogram.
+  *
+@@ -538,6 +565,53 @@ struct HistKernel {
+       launch(Policy{}, kernel);
+     }
+   }
++  template <bool kDense, bool kCompressed, typename Accessor>
++  void DispatchHistShmem(Context const* ctx, Accessor const& matrix,
++                         FeatureGroupsAccessor const& feature_groups,
++                         common::Span<GradientPairInt64 const> gpair,
++                         common::Span<DeviceHistogramBuilder::ScalarHistogramNode const> nodes) {
++    auto const shmem_bytes = feature_groups.ShmemSize();
++    auto launch = [&](auto policy, auto kernel, std::size_t shared) {
++      using Policy = common::GetValueT<decltype(policy)>;
++      this->SetCfg(policy, shared, kernel);
++      auto const& cfg = this->cfg.at(reinterpret_cast<void*>(kernel));
++      auto const cap = static_cast<std::size_t>(cfg.n_blocks_per_mp) * this->n_mps;
++      CHECK_GT(cap, 0);
++      auto const columns = common::DivRoundUp(matrix.row_stride, feature_groups.NumGroups());
++      ScalarHistogramBatch batch{};
++      auto flush = [&] {
++        if (batch.size == 0) {
++          return;
++        }
++        dim3 grid(batch.block_offsets[batch.size], feature_groups.NumGroups());
++        dh::LaunchKernel(grid, Policy::kBlockThreads, shared, ctx->CUDACtx()->Stream())(
++            kernel, matrix, feature_groups, gpair, batch);
++        dh::safe_cuda(cudaPeekAtLastError());
++        batch.size = 0;
++      };
++      for (auto const& node : nodes) {
++        if (node.rows.empty()) {
++          continue;
++        }
++        auto const items = static_cast<std::size_t>(node.rows.size()) * columns;
++        auto const blocks = std::min(cap, common::DivRoundUp(items, Policy::kTileSize));
++        batch.nodes[batch.size] = node;
++        batch.block_offsets[batch.size + 1] = batch.block_offsets[batch.size] + blocks;
++        if (++batch.size == kScalarNodesPerLaunch) {
++          flush();
++        }
++      }
++      flush();
++    };
++    if (!this->force_global && shmem_bytes <= this->max_shared_bytes) {
++      using Policy = HistPolicy<StHistBound, kItemsPerThread, kDense, kCompressed, true>;
++      launch(Policy{}, BatchedStHistKernel<Policy, Accessor>, shmem_bytes);
++    } else {
++      using Policy = HistPolicy<StHistBound, kItemsPerThread, kDense, kCompressed, false>;
++      launch(Policy{}, BatchedStHistKernel<Policy, Accessor>, 0);
++    }
++  }
++
+   // Vector leaf
+   template <bool kDense, bool kCompressed, typename Accessor, typename RidxIterSpan>
+   void DispatchHistShmem(Context const* ctx, Accessor const& matrix,
+@@ -625,6 +699,13 @@ class DeviceHistogramDispatchAccessor {
+     this->kernel_->Dispatch(ctx, matrix, feature_groups, gpair, ridx, hist);
+   }
+ 
++  void BuildHistogram(Context const* ctx, Accessor const& matrix,
++                      FeatureGroupsAccessor const& feature_groups,
++                      common::Span<GradientPairInt64 const> gpair,
++                      common::Span<DeviceHistogramBuilder::ScalarHistogramNode const> nodes) {
++    this->kernel_->Dispatch(ctx, matrix, feature_groups, gpair, nodes);
++  }
++
+   void BuildHistogram(Context const* ctx, Accessor const& matrix,
+                       FeatureGroupsAccessor const& feature_groups,
+                       linalg::MatrixView<GradientPairInt64 const> gpair,
+@@ -715,6 +796,18 @@ void DeviceHistogramBuilder::BuildHistogram(
+       matrix);
+ }
+ 
++void DeviceHistogramBuilder::BuildScalarHistograms(
++    Context const* ctx, EllpackAccessor const& matrix, FeatureGroupsAccessor const& feature_groups,
++    common::Span<GradientPairInt64 const> gpair, common::Span<ScalarHistogramNode const> nodes) {
++  this->monitor_.Start(__func__);
++  std::visit(
++      [&](auto const& acc) {
++        this->p_impl_->BuildHistogram(ctx, acc, feature_groups, gpair, nodes);
++      },
++      matrix);
++  this->monitor_.Stop(__func__);
++}
++
+ void DeviceHistogramBuilder::AllReduceHist(Context const* ctx, MetaInfo const& info,
+                                            bst_node_t nidx, std::size_t num_histograms) {
+   this->monitor_.Start(__func__);
+diff --git a/src/tree/gpu_hist/histogram.cuh b/src/tree/gpu_hist/histogram.cuh
+index f705b2f..f90bb98 100644
+--- a/src/tree/gpu_hist/histogram.cuh
++++ b/src/tree/gpu_hist/histogram.cuh
+@@ -186,6 +186,14 @@ class DeviceHistogramBuilder {
+                       common::Span<GradientPairInt64 const> gpair,
+                       common::Span<std::uint32_t const> ridx,
+                       common::Span<GradientPairInt64> histogram);
++  struct ScalarHistogramNode {
++    common::Span<std::uint32_t const> rows;
++    common::Span<GradientPairInt64> histogram;
++  };
++  void BuildScalarHistograms(Context const* ctx, EllpackAccessor const& matrix,
++                             FeatureGroupsAccessor const& feature_groups,
++                             common::Span<GradientPairInt64 const> gpair,
++                             common::Span<ScalarHistogramNode const> nodes);
+   // Build histograms for multiple nodes and multiple targets
+   void BuildHistogram(Context const* ctx, EllpackAccessor const& matrix,
+                       FeatureGroupsAccessor const& feature_groups,
+diff --git a/src/tree/updater_gpu_hist.cu b/src/tree/updater_gpu_hist.cu
+index 6372cde..587e104 100644
+--- a/src/tree/updater_gpu_hist.cu
++++ b/src/tree/updater_gpu_hist.cu
+@@ -493,8 +493,22 @@ struct GPUHistMakerDevice {
+         monitor.Stop("UpdatePositionBatch");
+ 
+         // Build histograms.
+-        for (auto nidx : build_nidx) {
+-          this->BuildHist(page, k, nidx);
++        if (is_single_block && !collective::IsDistributed() && build_nidx.size() > 1) {
++          std::vector<DeviceHistogramBuilder::ScalarHistogramNode> hist_nodes;
++          hist_nodes.reserve(build_nidx.size());
++          auto const& partitioner = partitioners_.At(k);
++          for (auto nidx : build_nidx) {
++            hist_nodes.push_back({partitioner->GetRows(nidx), histogram_.GetNodeHistogram(nidx)});
++          }
++          auto acc = page.Impl()->GetDeviceEllpack(this->ctx_, {});
++          auto gpair = this->d_gpair.View(this->ctx_->Device());
++          histogram_.BuildScalarHistograms(
++              ctx_, acc, feature_groups_->DeviceAccessor(ctx_->Device()), gpair.Values(),
++              common::Span<DeviceHistogramBuilder::ScalarHistogramNode const>{hist_nodes});
++        } else {
++          for (auto nidx : build_nidx) {
++            this->BuildHist(page, k, nidx);
++          }
+         }
+       });
+       ++k;

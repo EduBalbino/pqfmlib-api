@@ -1,0 +1,6 @@
+START 3.2.0 (16178, 1153) (45725, 1153)
+BATCH False 19.3127 same_models_masks_ap True
+BATCH True 14.0513 same_models_masks_ap True
+BATCH True 13.5529 same_models_masks_ap True
+BATCH False 17.0443 same_models_masks_ap True
+DONE {'False': 18.178519646869972, 'True': 13.80205729487352}

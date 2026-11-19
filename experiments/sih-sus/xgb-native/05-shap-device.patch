@@ -1,0 +1,45 @@
+--- a/src/c_api/c_api.cu
++++ b/src/c_api/c_api.cu
+@@ -192,6 +192,42 @@
+   API_END();
+ }
+ 
++// Private SIH experiment. Caller owns the host output buffer.
++XGB_DLL int XGBoosterExactShapAbsSumCuda(BoosterHandle handle, DMatrixHandle dmat,
++                                      bst_ulong n_columns, double* out) {
++  API_BEGIN();
++  CHECK(handle);
++  CHECK(dmat);
++  CHECK(out);
++  auto* learner = static_cast<xgboost::Learner*>(handle);
++  auto matrix = *static_cast<std::shared_ptr<xgboost::DMatrix>*>(dmat);
++  auto const n_rows = matrix->Info().num_row_;
++  CHECK_GT(n_rows, 0);
++  CHECK_EQ(n_columns, matrix->Info().num_col_);
++  auto& prediction = learner->GetThreadLocal().prediction_entry.predictions;
++  learner->Predict(matrix, /*output_margin=*/false, &prediction, 0, 0,
++                   /*training=*/false, /*pred_leaf=*/false, /*pred_contribs=*/true);
++  CHECK(learner->Ctx()->IsCUDA());
++  CHECK_EQ(prediction.Size(), n_rows * (n_columns + 1))
++      << "The SIH reducer expects a single output group.";
++  dh::safe_cuda(cudaSetDevice(learner->Ctx()->Ordinal()));
++  auto const* values = prediction.ConstDeviceSpan().data();
++  dh::device_vector<double> sums(n_columns);
++  auto* dst = sums.data().get();
++  dh::LaunchN(n_columns, [=] __device__(std::size_t column) {
++    double sum = 0;
++    for (std::size_t row = 0; row < n_rows; ++row) {
++      double v = values[row * (n_columns + 1) + column];
++      sum += v < 0 ? -v : v;
++    }
++    dst[column] = sum;
++  });
++  dh::safe_cuda(cudaMemcpyAsync(out, dst, n_columns * sizeof(double),
++                                          cudaMemcpyDeviceToHost, cudaStreamPerThread));
++  dh::safe_cuda(cudaStreamSynchronize(cudaStreamPerThread));
++  API_END();
++}
++
+ XGB_DLL int XGBoosterPredictFromCudaColumnar(BoosterHandle handle, char const *data,
+                                              char const *c_json_config, DMatrixHandle m,
+                                              xgboost::bst_ulong const **out_shape,
