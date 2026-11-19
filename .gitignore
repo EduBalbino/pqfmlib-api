@@ -79,6 +79,12 @@ experiments/sih-sus/*
 
 # Explicitly maintained tests
 tests/*
+!tests/test_base_lifecycle.py
+!tests/test_cd_ising_transformer.py
+!tests/test_execution.py
+!tests/test_heisenberg_transformer.py
+!tests/test_run_compatibility.py
+!tests/test_xyz_transformer.py
 !tests/test_native_simulation.py
 !tests/test_tilelang_execution.py
 !tests/test_tilelang_sampling.py
@@ -95,7 +101,6 @@ tests/*
 !tests/experiments/
 tests/experiments/*
 !tests/experiments/test_tilelang_cone_reduction.py
-!tests/experiments/test_heisenberg_fused_aot.py
 !tests/experiments/test_heisenberg_sih_aot.py
 !tests/experiments/test_sih_topology_sweep.py
 !tests/experiments/test_sia_classical_grid.py
