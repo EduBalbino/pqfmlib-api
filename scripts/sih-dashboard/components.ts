@@ -1,6 +1,6 @@
 import { isFeed, isHardwareHistory, type HardwareHistory, type HardwareSample, type Experiment, type Feed, type Snapshot, type Trial } from './status';
 
-const labels = { wide: '26 / 33 qubit encoding sweep', stratified: 'Stratified MoE', optimized: 'Shared queue benchmark' };
+const labels = { wide: '26 / 33 qubit encoding sweep', stratified: 'Stratified MoE', optimized: 'Shared queue benchmark', dense: 'Dense TileLang sweep', fast: 'Fast TileLang sweep' };
 const number = new Intl.NumberFormat('en', { maximumFractionDigits: 1 });
 
 function safe(value: string): string {

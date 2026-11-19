@@ -154,7 +154,7 @@ class Experiment:
 
     def update(self, now):
         for line in follow(self.log, self.logs):
-            if line.startswith('HILL_FINISHED') or (self.key == 'stratified' and 'STRATIFIED_FINISHED' in line):
+            if line.startswith('HILL_FINISHED') or line.startswith('STRATIFIED_SWEEP_SECONDS') or (self.key == 'stratified' and 'STRATIFIED_FINISHED' in line):
                 self.finished = True
             if line.startswith(('STRATIFIED_QUEUED', 'OPTIMIZED_QUEUED')):
                 self.queued = True
@@ -193,7 +193,7 @@ class Experiment:
         self.active = {key: started for key, started in self.active.items() if key not in self.runs}
 
     def snapshot(self, now):
-        usage = process_usage(self.pid) or (process_usage(self.next_pid) if self.next_pid else None)
+        usage = (process_usage(self.pid) if self.pid else None) or (process_usage(self.next_pid) if self.next_pid else None)
         cpu = None
         if usage and self.previous_cpu:
             previous_time, previous_cpu = self.previous_cpu
@@ -215,15 +215,56 @@ class Experiment:
                     recent=list(self.recent), cpu=cpu, rss=usage[1] if usage else None)
 
 
-def main():
+def hosted_experiments():
+    manifest = json.loads((ROOT/'manifest.json').read_text())
+    counts = defaultdict(int)
+    for entry in manifest.values():
+        kind = 'dense' if entry['backend'] == 'generic_tilelang' else 'fast'
+        counts[kind] += 1 + (4 if entry['strength'] == .1 else 0)
     experiments = [
-        Experiment('wide', ROOT/'sih-wide-run.log', ROOT/'sih-wide-results.jsonl', int(sys.argv[2]), 60),
-        Experiment('stratified', ROOT/'sih-stratified-run.log', ROOT/'sih-stratified-results.jsonl', int(sys.argv[3]), 4),
+        Experiment(kind, ROOT/f'{kind}-shared.log',
+                   ROOT/(('dense-' if kind == 'dense' else '') + 'results-tilelang-rows0.jsonl'),
+                   0, counts[kind] * 15)
+        for kind in ('dense', 'fast')
     ]
-    if len(sys.argv) > 4:
-        experiments.append(Experiment('optimized', ROOT/'sih-optimized-run.log',
-                                      ROOT/'sih-optimized-results.jsonl', int(sys.argv[4]), 8))
-        experiments[-1].next_pid = int(sys.argv[5]) if len(sys.argv) > 5 else None
+    experiments[1].queued = True
+    return experiments
+
+
+def refresh_hosted_process(experiments, launcher):
+    try:
+        children = Path(f'/proc/{launcher}/task/{launcher}/children').read_text().split()
+    except OSError:
+        children = []
+    dense, fast = experiments
+    dense.pid = fast.pid = 0
+    for child in children:
+        try:
+            output = Path(f'/proc/{child}/fd/1').readlink().name
+        except OSError:
+            continue
+        if output == dense.log.name:
+            dense.pid = int(child)
+        elif output == fast.log.name:
+            fast.pid = int(child)
+    if not fast.pid and not fast.finished and process_usage(launcher) and dense.pid:
+        fast.pid = launcher
+
+
+def main():
+    hosted = len(sys.argv) > 3 and sys.argv[2] == '--v100'
+    if hosted:
+        launcher = int(sys.argv[3])
+        experiments = hosted_experiments()
+    else:
+        experiments = [
+            Experiment('wide', ROOT/'sih-wide-run.log', ROOT/'sih-wide-results.jsonl', int(sys.argv[2]), 60),
+            Experiment('stratified', ROOT/'sih-stratified-run.log', ROOT/'sih-stratified-results.jsonl', int(sys.argv[3]), 4),
+        ]
+        if len(sys.argv) > 4:
+            experiments.append(Experiment('optimized', ROOT/'sih-optimized-run.log',
+                                          ROOT/'sih-optimized-results.jsonl', int(sys.argv[4]), 8))
+            experiments[-1].next_pid = int(sys.argv[5]) if len(sys.argv) > 5 else None
     target = ROOT/'sih-dashboard-status.json'
     temporary = target.with_suffix('.tmp')
     try:
@@ -249,6 +290,8 @@ def main():
                                             0 if last_sample is None else started-last_sample)
         last_sample = started
         if tick % 5 == 0:
+            if hosted:
+                refresh_hosted_process(experiments, launcher)
             for experiment in experiments:
                 experiment.update(now)
             snapshot = dict(updatedAt=now, experiments=[e.snapshot(now) for e in experiments],

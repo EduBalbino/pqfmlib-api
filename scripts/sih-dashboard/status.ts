@@ -9,7 +9,7 @@ export type Trial = {
   readBytes: number | null;
 };
 export type Experiment = {
-  id: 'wide' | 'stratified' | 'optimized';
+  id: 'wide' | 'stratified' | 'optimized' | 'dense' | 'fast';
   status: 'building' | 'queued' | 'running' | 'complete' | 'stopped';
   total: number;
   runs: Trial[];
@@ -62,7 +62,7 @@ function trial(value: unknown): value is Trial {
 }
 
 function experiment(value: unknown): value is Experiment {
-  return record(value) && (value.id === 'wide' || value.id === 'stratified' || value.id === 'optimized') &&
+  return record(value) && ['wide', 'stratified', 'optimized', 'dense', 'fast'].some((id) => value.id === id) &&
     ['building','queued','running','complete','stopped'].some((status) => value.status === status) &&
     finite(value.total) && value.total > 0 && Array.isArray(value.runs) && value.runs.every(trial) &&
     nullable(value.active, string) && nullable(value.observedSince, finite) &&

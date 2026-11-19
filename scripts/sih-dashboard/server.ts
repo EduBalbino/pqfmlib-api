@@ -7,6 +7,9 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) {
 const token = Bun.env.PQFM_REMOTE_TOKEN;
 if (!token) throw new Error('Set PQFM_REMOTE_TOKEN before starting the dashboard.');
 
+const hostedFiles = new URL(Bun.env.SIH_DASHBOARD_HOSTED_FILES ??
+  'https://127.0.0.1:19411/files/workspace/pqfm-pilot/');
+const localTunnel = hostedFiles.hostname === '127.0.0.1';
 const assets = new URL('./', import.meta.url);
 const bundle = await Bun.build({
   entrypoints: [new URL('./components.ts', assets).pathname],
@@ -22,11 +25,11 @@ async function refresh() {
   const started = performance.now();
   try {
     const response = await fetch(
-      'https://127.0.0.1:19411/files/workspace/pqfm-pilot/sih-dashboard-status.json',
+      new URL('sih-dashboard-status.json', hostedFiles),
       {
         headers: { Authorization: 'token ' + token, 'Cache-Control': 'no-cache' },
         signal: AbortSignal.timeout(16000),
-        tls: { rejectUnauthorized: false }, // The existing local tunnel terminates with a self-signed certificate.
+        tls: { rejectUnauthorized: !localTunnel }, // The existing local tunnel terminates with a self-signed certificate.
       },
     );
     if (!response.ok) throw new Error('Hosted snapshot returned HTTP ' + response.status);
@@ -51,10 +54,10 @@ let hardwareError: string | null = 'Waiting for hardware history.';
 
 async function refreshHardware() {
   try {
-    const response = await fetch('https://127.0.0.1:19411/files/workspace/pqfm-pilot/sih-dashboard-hardware.json.gz', {
+    const response = await fetch(new URL('sih-dashboard-hardware.json.gz', hostedFiles), {
       headers: { Authorization: 'token ' + token, 'Cache-Control': 'no-cache' },
       signal: AbortSignal.timeout(12000),
-      tls: { rejectUnauthorized: false },
+      tls: { rejectUnauthorized: !localTunnel },
     });
     if (!response.ok) throw new Error('Hosted hardware history returned HTTP ' + response.status);
     const raw = new Uint8Array(await response.arrayBuffer());
@@ -66,7 +69,7 @@ async function refreshHardware() {
   } catch (error) {
     hardwareError = error instanceof Error ? error.message : 'Hardware history unavailable.';
   } finally {
-    setTimeout(refreshHardware, 750);
+    setTimeout(refreshHardware, 2000);
   }
 }
 
