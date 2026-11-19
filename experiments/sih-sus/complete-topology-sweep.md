@@ -124,3 +124,23 @@ All seven geometry checks passed on one hosted RTX 3070. The builder timed 256 r
 The maximum absolute error versus the hosted batch-one FP64 reader was \(2.7\times10^{-15}\) over the parity samples. These rates project to about 10 GPU-hours of readout for all 315 dense cases, before fold preparation, XGBoost, and scheduling. The projection extrapolates synthetic rows. The five-GPU end-to-end runtime remains to be measured on the resumed sweep. The two 19-qubit native layouts account for about 98% of the revised projected readout time.
 
 The resumed hosted sweep completed the 19-qubit full shared-feature case at strength 0.20 in 20.039 s end to end with all 27 XGBoost candidates. The same geometry at strengths 0.05 and 0.10 took 2,012.209 s and 2,025.526 s with the old backend. These are different strengths and establish a geometry-level timing comparison. The 20.039 s case includes the shared classical branch after resume. The revised dense median requires more cases, particularly the two slower 19-qubit native layouts.
+
+## Paper-aligned strength extension
+
+Set `PQFM_SIH_PAPER_EXTENSION=1` with the complete 90-profile manifest and leave the topology filter unrestricted. The notebook adds strengths 0.025, 0.075, 0.15, and 0.40 to every geometry and encoding. The three previous strengths (0.05, 0.10, and 0.20) retain their original IDs and journal records. The new points probe weaker interactions, fill two intervals, and test a stronger regime. The only circuit parameter that changes is `alpha = strength × blocks`. PCA width 50, repetitions 1, SHAP top 80, the graph, and precompiled kernel signatures are fixed.
+
+| Lane | Profiles | Full folds | Circuit–fold cases | Hybrid grid candidates |
+|---|---:|---:|---:|---:|
+| Fast | 161 | 15 | 2,415 | 65,205 |
+| Dense | 49 | 15 | 735 | 19,845 |
+| Total | 210 | 15 | 3,150 | 85,050 |
+
+The extension adds 1,800 cases. It queues the new strengths ahead of unfinished original strengths within each fold. Replay uses the same two journals and exact precompiled TileLang backend, with a separate tuning index for the dense path. Native graph files and compiled libraries must be available at their configured paths. The hosted CUDA libraries target the hosted GPUs. Rebuild the artifacts offline when moving to a different CUDA architecture.
+
+### Comparisons motivated by the fraud-detection paper
+
+The paper trains the experts on balanced data and evaluates them on stratified holdouts at the observed prevalence. It trains a hard XGBoost gate on the indicator that the quantum expert is right and the classical expert is wrong. The SIH-SUS notebook uses this gate target, separates model selection from calibration, router analysis and testing, and compares the gate with soft routing and the standalone experts. The paper's secondary expert is a trained autoencoder/VQC pipeline. The SIH-SUS secondary expert here is XGBoost over classical features and exact Heisenberg observables.
+
+For each newly computed row, the notebook saves raw router probabilities and exports AP, trapezoidal AUPRC, and routing fraction for hard thresholds 0.50 through 0.90 in increments of 0.10. It also saves AP and AUPRC for fixed hybrid weights 0.05, 0.10, 0.25, and 0.50. These are descriptive holdout curves. Select any deployment threshold on training-side validation with a predeclared coverage or precision target. The coverage fraction estimates the potential quantum workload if inference defers circuit readout until after the routing decision. The current experiment computes both experts on all evaluation rows. Previously checkpointed rows retain the diagnostics available at their original run.
+
+The next matched control should use the same classical inputs, training rows, SHAP cap, XGBoost grid and routing protocol, but replace quantum observables with the PCA inputs or a dimension-matched classical feature map. Compare the fixed blend with learned routing to test whether the gate adds value beyond averaging, then compare against the paper-style VQC expert and a matched classical head. Report paired AP gaps on the same folds, precision and recall at an analysis-selected operating point, and AP versus routing coverage. A separate time-ordered validation is needed to estimate performance on future months.

@@ -59,6 +59,44 @@ def topology_profiles(root, *, complete=False):
     return profiles
 
 
+PAPER_SWEEP_STRENGTHS = (.025, .075, .15, .40)
+
+
+def extend_topology_manifest(manifest):
+    """Add angle scales without changing geometry, kernel shape, or prior case IDs."""
+    reference = {name.rsplit('_', 1)[0]: entry for name, entry in manifest.items()
+                 if entry['strength'] == .10}
+    if len(manifest) != 90 or len(reference) != 30:
+        raise ValueError('The paper sweep requires the complete 90-profile manifest')
+    extra = {
+        f'{geometry}_s{round(1000 * strength):03d}':
+            entry | dict(config=entry['config'] | dict(alpha=strength * entry['blocks']), strength=strength)
+        for geometry, entry in reference.items()
+        for strength in PAPER_SWEEP_STRENGTHS
+    }
+    if extra.keys() & manifest.keys():
+        raise ValueError('The paper sweep overlaps existing profile IDs')
+    return extra | manifest
+
+
+def routing_diagnostics(y, classical, hybrid, router):
+    """Evaluate fixed routing policies from the same held-out predictions."""
+    from sklearn.metrics import auc, average_precision_score, precision_recall_curve
+
+    def metrics(score):
+        precision, recall, _ = precision_recall_curve(y, score)
+        return dict(ap=float(average_precision_score(y, score)), auprc=float(auc(recall, precision)))
+
+    hard = {}
+    for threshold in (.5, .6, .7, .8, .9):
+        use_hybrid = router > threshold
+        hard[str(threshold)] = metrics(np.where(use_hybrid, hybrid, classical)) | dict(
+            routing_fraction=float(use_hybrid.mean()))
+    blends = {str(weight): metrics((1 - weight) * classical + weight * hybrid)
+              for weight in (.05, .10, .25, .50)}
+    return dict(hard=hard, fixed_blends=blends)
+
+
 def write_native_graph(root, factory, base):
     from qiskit_ibm_runtime.fake_provider import FakeSherbrooke
 

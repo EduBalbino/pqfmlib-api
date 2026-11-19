@@ -65,3 +65,38 @@ def test_dense_readout_loads_offline_kernels_without_compiling(tmp_path, monkeyp
     offline = GenericTileLangSweepReadout(model, artifacts=tmp_path)
     monkeypatch.setattr(offline.executor, '_kernels', None)
     np.testing.assert_allclose(offline.transform(rows), expected, rtol=0, atol=1e-12)
+
+
+def test_paper_extension_preserves_original_profiles_and_kernel_shapes(tmp_path):
+    from pqfmlib.experimental.sih_topology_sweep import extend_topology_manifest
+
+    base = {name: dict(config=config | {'alpha': strength * 3}, strength=strength, blocks=3,
+                       backend='aot', width=5)
+            for name, (config, strength) in topology_profiles(tmp_path, complete=True).items()}
+    expanded = extend_topology_manifest(base)
+
+    assert len(expanded) == 210
+    assert {name: expanded[name] for name in base} == base
+    for name in expanded.keys() - base.keys():
+        geometry = name.rsplit('_', 1)[0]
+        entry = expanded[name]
+        original = base[f'{geometry}_s10']
+        assert entry['strength'] in {.025, .075, .15, .40}
+        assert entry['config']['alpha'] == entry['strength'] * entry['blocks']
+        assert entry | dict(strength=original['strength'],
+                            config=entry['config'] | dict(alpha=original['config']['alpha'])) == original
+
+
+def test_routing_diagnostics_use_strict_threshold_and_held_out_scores():
+    from pqfmlib.experimental.sih_topology_sweep import routing_diagnostics
+
+    y = np.array([0, 1])
+    classic = np.array([.9, .1])
+    hybrid = np.array([.1, .9])
+    router = np.array([.60, .70])
+    result = routing_diagnostics(y, classic, hybrid, router)
+
+    assert result['hard']['0.6']['routing_fraction'] == .5
+    assert result['hard']['0.7']['routing_fraction'] == 0
+    assert result['hard']['0.5']['ap'] == 1
+    assert result['fixed_blends']['0.05']['ap'] == .5
