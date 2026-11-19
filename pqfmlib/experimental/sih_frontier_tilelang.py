@@ -8,9 +8,7 @@ from pathlib import Path
 import numpy as np
 
 
-@lru_cache(maxsize=128)
-def _bounded_order(edges, qubits, width=5):
-    """Search topological schedules subject to a live-wire bound."""
+def _edge_dependencies(edges, qubits):
     wires = [0] * qubits
     predecessors = []
     previous = [0] * qubits
@@ -20,6 +18,13 @@ def _bounded_order(edges, qubits, width=5):
         previous[left] = previous[right] = bit
         wires[left] |= bit
         wires[right] |= bit
+    return tuple(wires), tuple(predecessors)
+
+
+@lru_cache(maxsize=128)
+def _bounded_order(edges, qubits, width=5):
+    """Search topological schedules subject to a live-wire bound."""
+    wires, predecessors = _edge_dependencies(edges, qubits)
     all_gates = (1 << len(edges)) - 1
     dead_ends = set()
 
@@ -49,7 +54,38 @@ def _bounded_order(edges, qubits, width=5):
     return visit(0)
 
 
-def frontier_plan(model):
+@lru_cache(maxsize=128)
+def _compact_order(edges, qubits, width):
+    """Find a bounded schedule that minimizes the number of touched parity blocks."""
+    wires, parents = _edge_dependencies(edges, qubits)
+    wave = {0: (0, ())}
+    for _ in edges:
+        candidates = {}
+        for done, (cost, order) in wave.items():
+            live = {q for q, gates in enumerate(wires) if gates & done and gates & ~done}
+            for index, edge in enumerate(edges):
+                bit = 1 << index
+                if done & bit or parents[index] & ~done:
+                    continue
+                active = live.union(edge)
+                if len(active) > width:
+                    continue
+                next_done = done | bit
+                before, peak = len(live), len(active)
+                after = sum(bool(wires[q] & ~next_done) for q in active)
+                work = sum(4**rank for rank in range(before, peak))  # Attach
+                work += 4**(peak-1)  # Interact
+                work += sum(4**rank for rank in range(after, peak))  # Trace out
+                last = candidates.get(next_done)
+                if last is None or cost + work < last[0]:
+                    candidates[next_done] = (cost + work, (*order, index))
+        if not candidates:
+            return _bounded_order(edges, qubits, width)
+        wave = dict(sorted(candidates.items(), key=lambda item: (item[1][0], item[0]))[:128])
+    return next(iter(wave.values()))[1]
+
+
+def frontier_plan(model, *, max_width=5, compact=False):
     """Reorder disjoint-wire gates and retire wires after their final interaction."""
     from qiskit.quantum_info import Operator
     from pqfmlib.experimental.sih_topology_sweep import active_circuit, _input_columns
@@ -100,7 +136,8 @@ def frontier_plan(model):
         [i for i in ordered if q in edges[i]] != [i for i, edge in enumerate(edges) if q in edge]
         for q in range(qubits)
     ):
-        ordered = _bounded_order(tuple(edges), qubits)
+        planner = _compact_order if compact else _bounded_order
+        ordered = planner(tuple(edges), qubits, max_width)
         if ordered is None:
             return None
 
@@ -123,7 +160,7 @@ def frontier_plan(model):
     for q in np.flatnonzero(degree == 0):
         actions.extend(((0, 0, q, 0), (2, 0, q, 0)))
         width = max(width, 1)
-    if not 1 <= width <= 5:
+    if not 1 <= width <= max_width:
         return None
     return width, tuple(np.ascontiguousarray(item) for item in
                         (initial, np.asarray(inputs, np.int32), np.asarray(scales, np.float64),
@@ -235,10 +272,21 @@ class FrontierSweepReadout:
     def __init__(self, model, directory):
         from pqfmlib.experimental.sih_topology_sweep import _PrecompiledLocalReadout
 
-        plan = frontier_plan(model)
+        from pqfmlib.experimental.sih_wide_frontier_tilelang import live_bases
+
+        metadata = json.loads((Path(directory) / 'metadata.json').read_text())
+        dim = metadata.get('workspace')
+        compact = metadata.get('compact', False)
+        plan = frontier_plan(model, max_width=7 if compact else dim.bit_length()-1 if dim else 5,
+                             compact=compact)
         if plan is None:
             raise ValueError('Circuit has no supported exact density frontier')
-        self.reader = _PrecompiledLocalReadout(model, directory, plan[1])
+        width, inputs = plan
+        if dim:
+            if dim != 1 << width:
+                raise ValueError('Precompiled frontier width does not match the circuit')
+            inputs += live_bases(width, inputs[-1])
+        self.reader = _PrecompiledLocalReadout(model, directory, inputs)
 
     def transform(self, values):
         return self.reader.transform(values)

@@ -11,12 +11,13 @@ from sklearn.decomposition import PCA
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required')
+@pytest.mark.parametrize('compact', [False, True])
 @pytest.mark.parametrize('balanced,features,shape', [
     (False, 32, dict(gates=22, cones=8, width=6, depth=10)),
     (True, 32, dict(gates=36, cones=7, width=8, depth=12)),
     (False, 54, dict(gates=36, cones=7, width=8, depth=12)),
 ])
-def test_offline_sih_features_and_partial_batch(tmp_path, monkeypatch, balanced, features, shape):
+def test_offline_sih_features_and_partial_batch(tmp_path, monkeypatch, balanced, features, shape, compact):
     import tilelang
     from pqfmlib import HeisenbergProjectiveQFM
     from pqfmlib.experimental.heisenberg_sih_aot import build_sih_kernels, SIHHeisenbergAOT
@@ -30,7 +31,7 @@ def test_offline_sih_features_and_partial_batch(tmp_path, monkeypatch, balanced,
         framework='tilelang', expectation_method='exact',
         save_circuit_drawings=False,
     ).fit(values)
-    build_sih_kernels(tmp_path, batch=8, features=features, **shape)
+    build_sih_kernels(tmp_path, batch=8, features=features, compact=compact, **shape)
     def no_jit(*args, **kwargs):
         raise AssertionError('runtime must use exported kernels')
     monkeypatch.setattr(tilelang, 'jit', no_jit)
@@ -182,7 +183,8 @@ def test_specialized_topology_readouts_match_bound_qiskit(tmp_path, topology, mo
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required')
-def test_frontier_matches_bound_qiskit_with_reused_slots(tmp_path):
+@pytest.mark.parametrize('wide', [False, True])
+def test_frontier_matches_bound_qiskit_with_reused_slots(tmp_path, wide):
     from pqfmlib import HeisenbergProjectiveQFM
     from pqfmlib.experimental.sih_frontier_tilelang import (
         FrontierSweepReadout, build_frontier, frontier_plan, frontier_shape,
@@ -190,12 +192,17 @@ def test_frontier_matches_bound_qiskit_with_reused_slots(tmp_path):
 
     inputs = np.random.default_rng(352).normal(size=(5, 11))
     model = HeisenbergProjectiveQFM(
-        name_file='sih-frontier-test', q_enc=7, topology='full', R=1, alpha=.2,
+        name_file='sih-frontier-test', q_enc=7, topology='chain' if wide else 'full', R=1, alpha=.2,
         framework='tilelang', expectation_method='exact', encoding_mode='shared_feature',
     ).fit(inputs)
-    plan = frontier_plan(model)
+    plan = frontier_plan(model, max_width=7 if wide else 5, compact=wide)
     assert plan is not None and plan[0] < model.q_enc
-    build_frontier(tmp_path, *frontier_shape(model, plan), batch=3, threads=64)
+    if wide:
+        from pqfmlib.experimental.sih_wide_frontier_tilelang import build_wide_frontier, wide_frontier_shape
+
+        build_wide_frontier(tmp_path, *wide_frontier_shape(model, plan), batch=3, threads=64, compact=True)
+    else:
+        build_frontier(tmp_path, *frontier_shape(model, plan), batch=3, threads=64)
     angles, _ = model._make_theta_matrix(inputs)
     prepared = model._prepared_execution
     expected = []

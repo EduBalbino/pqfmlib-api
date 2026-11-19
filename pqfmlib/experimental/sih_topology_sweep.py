@@ -280,13 +280,15 @@ def build_commuting_x(directory, qubits, features, degree, *, batch, threads):
 class _PrecompiledLocalReadout:
     def __init__(self, model, directory, plan):
         import torch
-        import tvm
 
         directory = Path(directory)
         self.torch = torch
         self.plan = tuple(torch.as_tensor(x, device='cuda') for x in plan)
-        self.batch = json.loads((directory / 'metadata.json').read_text())['batch']
-        self.evaluate = tvm.runtime.load_module(str(directory / 'readout.so'))
+        metadata = json.loads((directory / 'metadata.json').read_text())
+        self.batch = metadata['batch']
+        if dim := metadata.get('workspace'):
+            self.plan += (torch.empty((self.batch, dim, dim, 2), dtype=torch.float64, device='cuda'),)
+        self.evaluate = _load_offline_kernel(directory / 'readout.so')
         self.input = torch.zeros((self.batch, model.num_features), dtype=torch.float64, device='cuda')
         self.result = torch.empty((self.batch, model.q_enc, 3), dtype=torch.float64, device='cuda')
 

@@ -144,3 +144,21 @@ The paper trains the experts on balanced data and evaluates them on stratified h
 For each newly computed row, the notebook saves raw router probabilities and exports AP, trapezoidal AUPRC, and routing fraction for hard thresholds 0.50 through 0.90 in increments of 0.10. It also saves AP and AUPRC for fixed hybrid weights 0.05, 0.10, 0.25, and 0.50. These are descriptive holdout curves. Select any deployment threshold on training-side validation with a predeclared coverage or precision target. The coverage fraction estimates the potential quantum workload if inference defers circuit readout until after the routing decision. The current experiment computes both experts on all evaluation rows. Previously checkpointed rows retain the diagnostics available at their original run.
 
 The next matched control should use the same classical inputs, training rows, SHAP cap, XGBoost grid and routing protocol, but replace quantum observables with the PCA inputs or a dimension-matched classical feature map. Compare the fixed blend with learned routing to test whether the gate adds value beyond averaging, then compare against the paper-style VQC expert and a matched classical head. Report paired AP gaps on the same folds, precision and recall at an analysis-selected operating point, and AP versus routing coverage. A separate time-ordered validation is needed to estimate performance on future months.
+
+## Exact 19-qubit chain and native readouts
+
+The dense shared-feature chain has five backward observable cones with at most 12 qubits. The packed reader keeps one complex FP64 statevector per cone in shared memory. An edge rotation maps each basis index (i) only to (i) and (i\mathbin{\mathrm{xor}}(2^a+2^b)), since every (XX), (YY), and (ZZ) factor preserves the parity on wires (a,b). A thread owns both amplitudes of one pair, reads both before storing either output, and updates the pair in place. A block barrier separates gate steps. Each cone processes only its actual state dimension and produces all assigned expectations before releasing the statevector.
+
+The native layouts have wider observable cones, but a circuit schedule preserving the order on each individual wire fits within seven live wires. The planner favors schedules requiring fewer density-matrix blocks. The kernel maintains a single matrix and enumerates only indices with zero bits in vacant slots. For a pair of row indices and a pair of column indices with the same two-wire flip mask, the four entries form a block updated by (U_p B U_q^\dagger). Distinct threads own disjoint blocks. Insertion tensors the current reduced state with a fresh product-state wire. Retirement records the target's expectations and sums the corresponding diagonal blocks to trace the wire out. The kernel uses a reusable GPU workspace and FP64 throughout.
+
+Build the candidate revision with `python scripts/sih_q19_build.py <manifest.json> <previous-settings.json> <output>`. The builder checks strengths 0.025, 0.10, and 0.40 against the prior offline GPU reader, with a partial batch. It times three alternating runs on the same 521 rows and promotes candidates that improve median throughput by more than 5%. Use its settings with `PQFM_SIH_DENSE_TUNING` and resume at a durable case checkpoint. Scientific case IDs and the journals are shared across backend revisions.
+
+| Dense 19-qubit geometry | Previous rows/s | Revised rows/s | Readout speedup |
+|---|---:|---:|---:|
+| Chain | 6,951 | 30,542 | 4.39× |
+| Native automatic layout | 446 | 8,595 | 19.25× |
+| Native fixed layout | 207 | 8,623 | 41.70× |
+
+These warmed hosted RTX 3070 comparisons include input and output transfers. The fast sweep also used the host during benchmarking. Across the three strengths tested, the largest absolute difference over the 57 local observables was (4.3\times10^{-15}). End-to-end fold time includes shared preprocessing, XGBoost, and routing.
+
+After the checkpoint handoff, the hosted five-GPU lane completed a full fold-one fixed-native case at strength 0.20 in 15.568 s with all 27 grid candidates. The preceding revision took 121.964–122.252 s on the same geometry at the four new strengths. The comparisons span different strengths and measure the whole case.
