@@ -162,3 +162,13 @@ Build the candidate revision with `python scripts/sih_q19_build.py <manifest.jso
 These warmed hosted RTX 3070 comparisons include input and output transfers. The fast sweep also used the host during benchmarking. Across the three strengths tested, the largest absolute difference over the 57 local observables was (4.3\times10^{-15}). End-to-end fold time includes shared preprocessing, XGBoost, and routing.
 
 After the checkpoint handoff, the hosted five-GPU lane completed a full fold-one fixed-native case at strength 0.20 in 15.568 s with all 27 grid candidates. The preceding revision took 121.964–122.252 s on the same geometry at the four new strengths. The comparisons span different strengths and measure the whole case.
+
+### Tied exchange on both offline native layouts
+
+The shared-feature map gives all three Pauli rotations on an edge an identical angle (	heta). For (S) the SWAP operator, (XX+YY+ZZ=2S-I). Since the three factors commute, their product is (e^{i	heta/2}(cos	heta, I-isin	heta, S)). Factoring out the phase on the even-parity subspace yields identity there. The odd-parity block has diagonal (cos^2	heta+isin	hetacos	heta) and off-diagonal (sin^2	heta-isin	hetacos	heta). A density block whose row and column pairs both have even parity remains invariant. The specialized kernel skips those blocks and computes the remaining coefficients from one angle per edge. The reader checks the input columns and scales are tied before it loads this specialization.
+
+Compact basis sizes are powers of two. The kernel uses shifts and masks to decode row and column indices. Both layouts can use the same compiled library because its basis table reserves one slot per action, while each layout supplies its own table and circuit plan.
+
+Use `scripts/sih_q19_native_refine.py` to compare the previous reader, indexed frontier, and tied-exchange frontier on the target GPU. It checks all 57 observables at three strengths, including a partial batch, and promotes only configurations with at least 5% higher median throughput. The remaining tuning settings are copied from the previous revision.
+
+The hosted RTX 3070 comparison timed 2,051 identical rows over five alternating runs per reader. The automatic layout improved from 11,198 to 22,811 rows/s (2.04×), and the fixed layout from 11,413 to 23,410 rows/s (2.05×). The maximum absolute difference across 259 rows at each of three strengths was (2.3\times10^{-15}). These rates measure readout including transfers.

@@ -30,7 +30,7 @@ def live_bases(width, actions):
 
 
 def build_wide_frontier(directory, qubits, features, width, groups, steps, nbases, *,
-                        batch=128, threads=128, compact=False):
+                        batch=128, threads=128, compact=False, exchange=False):
     import tilelang
     import tilelang.language as T
 
@@ -68,43 +68,57 @@ def build_wide_frontier(directory, qubits, features, width, groups, steps, nbase
                     bit = 1 << a
                     basis_id = step_basis[step]
                     size = basis_sizes[basis_id]
+                    log_size = 31 - T.clz(T.cast(size, 'uint32'))
                     if kind == 1:
                         flip = bit | (1 << b)
-                        if lane < 2:
-                            ax = T.float64(3.141592653589793) * T.tanh(values[row, columns[edge, 0]] / 3.0) * scales[edge, 0]
-                            ay = T.float64(3.141592653589793) * T.tanh(values[row, columns[edge, 1]] / 3.0) * scales[edge, 1]
-                            az = T.float64(3.141592653589793) * T.tanh(values[row, columns[edge, 2]] / 3.0) * scales[edge, 2]
-                            angle = T.if_then_else(lane == 0, ax - ay, ax + ay)
-                            cr, ci = T.cos(az), T.if_then_else(lane == 0, -T.sin(az), T.sin(az))
-                            ca, sa = T.cos(angle), T.sin(angle)
-                            coefficients[lane, 0, 0], coefficients[lane, 0, 1] = cr * ca, ci * ca
-                            coefficients[lane, 1, 0], coefficients[lane, 1, 1] = ci * sa, -cr * sa
+                        if exchange:
+                            if lane == 0:
+                                theta = T.float64(6.283185307179586) * T.tanh(values[row, columns[edge, 0]] / 3.0) * scales[edge, 0]
+                                c, s = T.cos(theta), T.sin(theta)
+                                coefficients[1, 0, 0], coefficients[1, 0, 1] = c*c, c*s
+                                coefficients[1, 1, 0], coefficients[1, 1, 1] = s*s, -c*s
+                                coefficients[0, 0, 0], coefficients[0, 0, 1] = 1.0, 0.0
+                                coefficients[0, 1, 0], coefficients[0, 1, 1] = 0.0, 0.0
+                        else:
+                            if lane < 2:
+                                ax = T.float64(3.141592653589793) * T.tanh(values[row, columns[edge, 0]] / 3.0) * scales[edge, 0]
+                                ay = T.float64(3.141592653589793) * T.tanh(values[row, columns[edge, 1]] / 3.0) * scales[edge, 1]
+                                az = T.float64(3.141592653589793) * T.tanh(values[row, columns[edge, 2]] / 3.0) * scales[edge, 2]
+                                angle = T.if_then_else(lane == 0, ax - ay, ax + ay)
+                                cr, ci = T.cos(az), T.if_then_else(lane == 0, -T.sin(az), T.sin(az))
+                                ca, sa = T.cos(angle), T.sin(angle)
+                                coefficients[lane, 0, 0], coefficients[lane, 0, 1] = cr * ca, ci * ca
+                                coefficients[lane, 1, 0], coefficients[lane, 1, 1] = ci * sa, -cr * sa
                         T.sync_threads()
                         for chunk in T.serial(T.ceildiv(size * size, threads)):
                             index = chunk * threads + lane
                             if index < size * size:
-                                i = bases[basis_id, index // size]
-                                j = bases[basis_id, index % size]
+                                i = bases[basis_id, index >> log_size]
+                                j = bases[basis_id, index & (size - 1)]
                                 pi, pj = (i >> b) & 1, (j >> b) & 1
-                                for uv_c in T.unroll(8):
-                                    u, v, c = uv_c // 4, uv_c // 2 % 2, uv_c % 2
-                                    block[u, v, c] = rho[row, i ^ (u * flip), j ^ (v * flip), c]
-                                for uv in T.unroll(4):
-                                    u, v = uv // 2, uv % 2
-                                    ar, ai = block[u, v, 0], block[u, v, 1]
-                                    br, bi = block[1-u, v, 0], block[1-u, v, 1]
-                                    dr, di = coefficients[pi, 0, 0], coefficients[pi, 0, 1]
-                                    er, ei = coefficients[pi, 1, 0], coefficients[pi, 1, 1]
-                                    mixed[u, v, 0] = dr*ar - di*ai + er*br - ei*bi
-                                    mixed[u, v, 1] = dr*ai + di*ar + er*bi + ei*br
-                                for uv in T.unroll(4):
-                                    u, v = uv // 2, uv % 2
-                                    ar, ai = mixed[u, v, 0], mixed[u, v, 1]
-                                    br, bi = mixed[u, 1-v, 0], mixed[u, 1-v, 1]
-                                    dr, di = coefficients[pj, 0, 0], coefficients[pj, 0, 1]
-                                    er, ei = coefficients[pj, 1, 0], coefficients[pj, 1, 1]
-                                    rho[row, i ^ (u * flip), j ^ (v * flip), 0] = dr*ar + di*ai + er*br + ei*bi
-                                    rho[row, i ^ (u * flip), j ^ (v * flip), 1] = dr*ai - di*ar + er*bi - ei*br
+                                if not exchange or (pi | pj) != 0:
+                                    for uv_c in T.unroll(8):
+                                        u, v, c = uv_c // 4, uv_c // 2 % 2, uv_c % 2
+                                        block[u, v, c] = rho[row, i ^ (u * flip), j ^ (v * flip), c]
+                                    for uv in T.unroll(4):
+                                        u, v = uv // 2, uv % 2
+                                        ar, ai = block[u, v, 0], block[u, v, 1]
+                                        br, bi = block[1-u, v, 0], block[1-u, v, 1]
+                                        dr, di = coefficients[pi, 0, 0], coefficients[pi, 0, 1]
+                                        er, ei = coefficients[pi, 1, 0], coefficients[pi, 1, 1]
+                                        mixed[u, v, 0] = dr*ar - di*ai + er*br - ei*bi
+                                        mixed[u, v, 1] = dr*ai + di*ar + er*bi + ei*br
+                                    for uv in T.unroll(4):
+                                        u, v = uv // 2, uv % 2
+                                        ar, ai = mixed[u, v, 0], mixed[u, v, 1]
+                                        br, bi = mixed[u, 1-v, 0], mixed[u, 1-v, 1]
+                                        dr, di = coefficients[pj, 0, 0], coefficients[pj, 0, 1]
+                                        er, ei = coefficients[pj, 1, 0], coefficients[pj, 1, 1]
+                                        ri, rj = i ^ (u * flip), j ^ (v * flip)
+                                        real = dr*ar + di*ai + er*br + ei*bi
+                                        imag = dr*ai - di*ar + er*bi - ei*br
+                                        rho[row, ri, rj, 0] = real
+                                        rho[row, ri, rj, 1] = imag
                     else:
                         if kind == 2:
                             for k in T.Parallel(dim // 2):
@@ -123,8 +137,8 @@ def build_wide_frontier(directory, qubits, features, width, groups, steps, nbase
                         for chunk in T.serial(T.ceildiv(size * size, threads)):
                             index = chunk * threads + lane
                             if index < size * size:
-                                i = bases[basis_id, index // size]
-                                j = bases[basis_id, index % size]
+                                i = bases[basis_id, index >> log_size]
+                                j = bases[basis_id, index & (size - 1)]
                                 if kind == 0:
                                     ar, ai = rho[row, i, j, 0], rho[row, i, j, 1]
                                     for uv in T.unroll(4):
@@ -141,7 +155,7 @@ def build_wide_frontier(directory, qubits, features, width, groups, steps, nbase
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     frontier().export_library(str(directory / 'readout.so'))
-    (directory / 'metadata.json').write_text(json.dumps(dict(batch=batch, threads=threads, workspace=dim, compact=compact)))
+    (directory / 'metadata.json').write_text(json.dumps(dict(batch=batch, threads=threads, workspace=dim, compact=compact, exchange=exchange, bases=nbases)))
 
 
 def wide_frontier_shape(model, plan):

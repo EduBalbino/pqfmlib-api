@@ -285,7 +285,16 @@ class FrontierSweepReadout:
         if dim:
             if dim != 1 << width:
                 raise ValueError('Precompiled frontier width does not match the circuit')
-            inputs += live_bases(width, inputs[-1])
+            _, columns, scales, actions = inputs
+            if metadata.get('exchange') and (
+                np.any(columns != columns[:, :1]) or np.any(scales != scales[:, :1])
+            ):
+                raise ValueError('Precompiled exchange requires identical XX, YY, and ZZ angles')
+            steps, sizes, bases = live_bases(width, actions)
+            extra = metadata.get('bases', len(sizes)) - len(sizes)
+            if extra < 0:
+                raise ValueError('Precompiled frontier has too few basis tables')
+            inputs += (steps, np.pad(sizes, (0, extra)), np.pad(bases, ((0, extra), (0, 0))))
         self.reader = _PrecompiledLocalReadout(model, directory, inputs)
 
     def transform(self, values):

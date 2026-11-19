@@ -183,8 +183,9 @@ def test_specialized_topology_readouts_match_bound_qiskit(tmp_path, topology, mo
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA required')
-@pytest.mark.parametrize('wide', [False, True])
-def test_frontier_matches_bound_qiskit_with_reused_slots(tmp_path, wide):
+@pytest.mark.parametrize('variant', ['shared_memory', 'wide', 'exchange'])
+def test_frontier_matches_bound_qiskit_with_reused_slots(tmp_path, variant):
+    wide = variant != 'shared_memory'
     from pqfmlib import HeisenbergProjectiveQFM
     from pqfmlib.experimental.sih_frontier_tilelang import (
         FrontierSweepReadout, build_frontier, frontier_plan, frontier_shape,
@@ -200,7 +201,9 @@ def test_frontier_matches_bound_qiskit_with_reused_slots(tmp_path, wide):
     if wide:
         from pqfmlib.experimental.sih_wide_frontier_tilelang import build_wide_frontier, wide_frontier_shape
 
-        build_wide_frontier(tmp_path, *wide_frontier_shape(model, plan), batch=3, threads=64, compact=True)
+        shape = wide_frontier_shape(model, plan)
+        build_wide_frontier(tmp_path, *shape[:-1], shape[-2], batch=3, threads=64, compact=True,
+                            exchange=variant == 'exchange')
     else:
         build_frontier(tmp_path, *frontier_shape(model, plan), batch=3, threads=64)
     angles, _ = model._make_theta_matrix(inputs)
