@@ -10,11 +10,7 @@ Before implementation:
 - propose an implementation plan;
 - split complex work into small, reviewable phases.
 
-Present the plan to the user and wait for explicit approval before starting implementation.
-
-After approval, implement only the approved phase.
-
-Do not automatically continue to the next phase. Stop after each phase and wait for user approval.
+Proceed through the requested phases and verify each phase before continuing.
 
 Small, obvious, and local changes may be implemented directly when explicitly requested.
 
