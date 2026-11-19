@@ -60,3 +60,19 @@ When multiple GPUs are visible, the CPU coordinator prepares the outer represent
 On the hosted 26-qubit disconnected-ring edge-first case at strength 0.10, all four held-out prediction arrays were bitwise identical before and after the change across 14,289 rows. The refit feature stage overlapped the hybrid search by 2.668 s. The new trial took 14.038 s under the sequential five-GPU allocation. The prior 30.138 s measurement used the six-GPU allocation with concurrent trials, so the difference includes scheduling and resource allocation.
 
 The dense queue can increase `PQFM_SIH_QUANTUM_SHARDS` from the default three to the number of sweep GPUs. Each shard evaluates disjoint rows and reassembles the original order. The hosted handoff waits for the five-GPU sweep to finish and the dense worker to write a completed case, then resumes the dense journal on GPUs 0–4 with five shards. GPU 5 becomes available for kernel experiments. Five-way scaling is a planning bound until a full dense case is timed after the handoff.
+
+## Confirmation on untouched folds
+
+Select three standalone-hybrid finalists and two soft-MoE finalists from the completed 69-case screen on fold 1. Evaluate the fixed shortlist on folds 2–15 of the notebook's three repeats of five-fold stratification. Fold 1 serves for selection and is excluded from confirmation summaries. Every case keeps all 27 XGBoost candidates, and all five cases share one 27-candidate classical search per fold. This gives 70 circuit–fold attempts, 1,890 hybrid and 378 classical candidates. These counts refer to grid candidates. Each hybrid candidate includes its ranking fit, exact SHAP selection, and selected-feature fit.
+
+| Circuit | Selected for | Fold 1 AP on selection metric |
+|---|---|---:|
+| `q19_full_auto_axes_s20` | Hybrid | 0.338588 |
+| `q26_plaquettes_auto_axes_s20` | Hybrid | 0.337549 |
+| `q26_full_auto_axes_s10` | Hybrid | 0.336869 |
+| `q26_native_auto_balanced_s20` | Soft MoE | 0.328150 |
+| `q26_plaquettes_auto_shared_s20` | Soft MoE | 0.327942 |
+
+Use a fresh `PQFM_SIH_TOPOLOGY_DIR` containing a copy of the completed manifest and access to the same precompiled artifact directory. Set `PQFM_SIH_TOPOLOGY_COMPLETE=1`, `PQFM_SIH_TOPOLOGY_RUN=1`, and `PQFM_SIH_BACKEND_REVISION=precompiled-v1`. Set `PQFM_SIH_TOPOLOGY_MATCH` to the five table keys separated by commas and `PQFM_SIH_STRATIFIED_FOLDS=2,3,4,5,6,7,8,9,10,11,12,13,14,15`. The hosted confirmation uses GPU 5 and CPU IDs 82–87 while the dense queue continues on GPUs 0–4. Resume with the same journal if interrupted.
+
+Use `python scripts/sih_confirmation_report.py <scores.csv>` to compare AP on matched folds. The report gives paired gaps and win counts against the shared classical baseline, direct comparisons within each objective, and the effect of routing on each hybrid. Repeated folds share admissions across repeats. Interpret their estimates as paired comparisons on this dataset.
