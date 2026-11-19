@@ -37,14 +37,16 @@ def locked_sweep_journal(path):
         yield records
 
 
-def topology_profiles(root, *, complete=False):
+def topology_profiles(root, *, complete=False, native_33=False):
     """Preserve 50 PCA inputs and cancel the block-dependent angle normalization."""
     profiles = {}
-    for qubits in (19, 26):
-        for topology in ('chain', 'plaquettes', 'full', 'native'):
+    for qubits in ((19, 26, 33) if native_33 else (19, 26)):
+        topologies = ('native',) if qubits == 33 else ('chain', 'plaquettes', 'full', 'native')
+        labels = ('shared',) if qubits == 33 else ('axes', 'balanced', 'shared')
+        for topology in topologies:
             layouts = ('auto', 'fixed') if topology == 'native' else ('auto',)
             for layout in layouts:
-                for label in ('axes', 'balanced', 'shared'):
+                for label in labels:
                     strengths = (.05, .1, .2) if complete or label == 'balanced' else (.1,)
                     for strength in strengths:
                         name = f'q{qubits}_{topology}_{layout}_{label}_s{round(100*strength):02d}'
@@ -67,8 +69,11 @@ def extend_topology_manifest(manifest):
     """Add angle scales without changing geometry, kernel shape, or prior case IDs."""
     reference = {name.rsplit('_', 1)[0]: entry for name, entry in manifest.items()
                  if entry['strength'] == .10}
-    if len(manifest) != 90 or len(reference) != 30:
-        raise ValueError('The paper sweep requires the complete 90-profile manifest')
+    native_33 = {f'q33_native_{layout}_shared_s{strength}'
+                 for layout in ('auto', 'fixed') for strength in ('05', '10', '20')}
+    extra = {name for name in manifest if name.startswith('q33_')}
+    if (extra and extra != native_33) or len(manifest) != 90 + len(extra) or len(reference) != 30 + len(extra) // 3:
+        raise ValueError('The paper sweep requires the complete base manifest and, if enabled, all six native 33-qubit cases')
     extra = {
         f'{geometry}_s{round(1000 * strength):03d}':
             entry | dict(config=entry['config'] | dict(alpha=strength * entry['blocks']), strength=strength)
@@ -98,18 +103,22 @@ def routing_diagnostics(y, classical, hybrid, router):
     return dict(hard=hard, fixed_blends=blends)
 
 
-def write_native_graph(root, factory, base):
+def write_native_graph(root, factory, base, qubit_counts=(19, 26)):
     from qiskit_ibm_runtime.fake_provider import FakeSherbrooke
 
     from pqfmlib.hardware.topology import save_topology_snapshot
     from pqfmlib.utils.io import save_json
 
     graph = root / 'graphs' / 'sherbrooke.json'
-    save_topology_snapshot(FakeSherbrooke(), graph)
-    for qubits in (19, 26):
+    if not graph.exists():
+        save_topology_snapshot(FakeSherbrooke(), graph)
+    for qubits in qubit_counts:
+        fixed = graph.parent / f'fixed_q{qubits}.json'
+        if fixed.exists():
+            continue
         model = factory(base | dict(q_enc=qubits, topology='native', ideal=False,
                                     topology_file=str(graph))).fit(np.zeros((1, 50)))
-        save_json(list(reversed(model.phys_nodes)), graph.parent / f'fixed_q{qubits}.json')
+        save_json(list(reversed(model.phys_nodes)), fixed)
 
 
 def active_circuit(model):
@@ -160,15 +169,19 @@ def write_drawings(root, name, model, active):
     plt.close(fig)
 
 
-def prepare_topology_sweep(root, factory, base, draw=False, *, complete=False):
+def prepare_topology_sweep(root, factory, base, draw=False, *, complete=False, native_33=False):
     from pqfmlib.experimental.heisenberg_tilelang import causal_cones
 
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    if not (root / 'graphs' / 'sherbrooke.json').exists():
-        write_native_graph(root, factory, base)
+    qubit_counts = (19, 26, 33) if native_33 else (19, 26)
+    graph_dir = root / 'graphs'
+    if not (graph_dir / 'sherbrooke.json').exists() or any(
+        not (graph_dir / f'fixed_q{qubits}.json').exists() for qubits in qubit_counts
+    ):
+        write_native_graph(root, factory, base, qubit_counts)
     manifest = {}
-    profiles = topology_profiles(root, complete=complete)
+    profiles = topology_profiles(root, complete=complete, native_33=native_33)
     for name, (config, strength) in profiles.items():
         probe = np.zeros((1, config['n_components']))
         model = factory(base | config).fit(probe)

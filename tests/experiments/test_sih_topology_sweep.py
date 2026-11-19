@@ -8,6 +8,34 @@ import pytest
 from pqfmlib.experimental.sih_topology_sweep import locked_sweep_journal, topology_profiles
 
 
+def test_native_ladder_dispatches_short_tail_in_row_order(monkeypatch):
+    from pqfmlib.experimental.sih_native_ladder import NativeLadderReadout
+    from pqfmlib.experimental.sih_topology_sweep import _PrecompiledLocalReadout
+
+    batches = []
+
+    def transform(reader, rows):
+        batches.append((reader.batch, len(rows)))
+        return rows * 2
+
+    monkeypatch.setattr(_PrecompiledLocalReadout, 'transform', transform)
+    reader = NativeLadderReadout.__new__(NativeLadderReadout)
+    reader.batch = 1024
+    reader.tail = NativeLadderReadout.__new__(NativeLadderReadout)
+    reader.tail.batch = 32
+    reader.tail.tail = None
+
+    for count, expected in [
+        (1027, [(1024, 1024), (32, 3)]),
+        (3, [(32, 3)]),
+        (1057, [(1024, 1057)]),
+    ]:
+        batches.clear()
+        rows = np.arange(count)[:, None]
+        np.testing.assert_array_equal(reader.transform(rows), rows * 2)
+        assert batches == expected
+
+
 def test_complete_sweep_covers_every_strength_for_each_encoding(tmp_path):
     profiles = topology_profiles(tmp_path, complete=True)
 
@@ -21,6 +49,17 @@ def test_complete_sweep_covers_every_strength_for_each_encoding(tmp_path):
                 prefix = f'q{qubits}_{topology}_{layout}_{mode}_s'
                 strengths = {strength for name, (_, strength) in profiles.items() if name.startswith(prefix)}
                 assert strengths == {.05, .10, .20}
+
+
+def test_native_33_is_an_opt_in_shared_feature_extension(tmp_path):
+    baseline = topology_profiles(tmp_path, complete=True)
+    extended = topology_profiles(tmp_path, complete=True, native_33=True)
+    assert {name: extended[name] for name in baseline} == baseline
+    extra = extended.keys() - baseline.keys()
+    assert extra == {
+        f'q33_native_{layout}_shared_s{strength}'
+        for layout in ('auto', 'fixed') for strength in ('05', '10', '20')
+    }
 
 
 def test_resume_recovers_a_torn_tail_and_excludes_a_second_writer(tmp_path):
